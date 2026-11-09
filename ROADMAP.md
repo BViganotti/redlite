@@ -40,7 +40,7 @@ duplicate effort.
 - [x] Snapshots (`SAVE`, `BGSAVE`) with a versioned, checksummed file format
 - [x] Background AOF rewrite that does not block writers
 - [x] `REPLICAOF` with full resync and command propagation
-- [ ] Replication backlog and partial resync
+- [x] Replication backlog and partial resync
 - [x] `INFO replication` fields that reflect reality
 
 ## v0.5 — operations
@@ -73,9 +73,9 @@ duplicate effort.
 
 - [x] Password authentication (`requirepass`, `AUTH`, `NOAUTH`)
 - [x] `HELLO ... AUTH` and `--masterauth` for replication
+- [x] Per-user ACLs with command categories and key patterns
 - [x] Minimal ACL introspection (`ACL WHOAMI`, `ACL LIST`, `ACL CAT`)
-- [ ] Per-user ACLs with command categories and key patterns
-- [ ] TLS
+- [x] TLS listener, optional client certificates, TLS replication
 
 ## Good first issues
 

@@ -189,6 +189,12 @@ pass a `Logger`.
 | `--requirepass` | none | Password clients must send with `AUTH`. |
 | `--masterauth` | none | Password a replica sends to its primary. |
 | `--notify-keyspace-events` | none | Keyspace event flags, for example `KEA`. |
+| `--tls-port` | `0` | TLS listener port; requires a certificate and key. |
+| `--tls-cert-file` | none | PEM certificate for the TLS listener. |
+| `--tls-key-file` | none | PEM private key for the TLS listener. |
+| `--tls-ca-cert-file` | none | CA used to require and verify client certificates. |
+| `--tls-replication` | `false` | Dial the primary over TLS. |
+| `--repl-backlog-size` | `1 MiB` | Bytes of replication backlog kept for partial resync. |
 | `--version` | | Print the version and exit. |
 
 At runtime:
@@ -214,7 +220,7 @@ Flags follow Redis: `K` keyspace channel, `E` keyevent channel, `A` all
 categories, and `g`, `$`, `l`, `s`, `h`, `z`, `x` for generic, string, list,
 set, hash, sorted-set and expired events.
 
-## Authentication
+## Authentication and ACLs
 
 Set a password and every connection must authenticate before it can run a
 command:
@@ -227,8 +233,32 @@ PONG
 
 `CONFIG SET requirepass <value>` changes it at runtime; an empty value disables
 authentication. A replica connecting to a protected primary needs
-`--masterauth <password>`. There is one user, `default`; `ACL WHOAMI`,
-`ACL LIST` and `ACL CAT` are implemented, per-user ACLs are not.
+`--masterauth <password>`.
+
+Beyond the default user you can define restricted accounts:
+
+```console
+$ redis-cli ACL SETUSER alice on '>pw' '~cache:*' '+@read'
+OK
+$ redis-cli --user alice --pass pw GET cache:1
+```
+
+Rules support `on`/`off`, `>password`/`nopass`, `~key-pattern`/`allkeys`,
+`&channel-pattern`/`allchannels`, `+@read`, `+@write`, `+command`, `-command`,
+`+@all` and `reset`. `ACL WHOAMI`, `ACL USERS`, `ACL LIST`, `ACL GETUSER`,
+`ACL SETUSER` and `ACL DELUSER` are implemented.
+
+## TLS
+
+Run a TLS listener alongside the plain one:
+
+```console
+$ ./bin/redlite --tls-port 6380 --tls-cert-file cert.pem --tls-key-file key.pem
+$ redis-cli --tls --cacert ca.pem -p 6380 PING
+```
+
+Add `--tls-ca-cert-file` to require and verify client certificates, and
+`--tls-replication` on a replica whose primary only offers TLS.
 
 ## Replication
 
@@ -245,9 +275,10 @@ master_link_status:up
 ```
 
 The replica performs a full resync — snapshot plus command stream — then
-applies writes as they happen. It is read-only until `REPLICAOF NO ONE`. Partial
-resync and a replication backlog are not implemented yet, so a dropped link
-triggers a new full resync.
+applies writes as they happen. A dropped link resumes from the replication
+backlog with a partial resync when the offset is still covered (1 MiB by
+default, `--repl-backlog-size`); otherwise it re-sends the snapshot. It is
+read-only until `REPLICAOF NO ONE`.
 
 ## Development
 

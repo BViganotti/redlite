@@ -4,6 +4,19 @@ All notable changes to redlite are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/).
 
+## [0.9.0] - 2026-11-09
+
+### Added
+
+- Per-user ACLs: `ACL SETUSER`, `DELUSER`, `GETUSER`, `USERS`, with
+  `on`/`off`, passwords, key patterns, channel patterns, `+@read`, `+@write`,
+  `+command`/`-command` and `+@all`/`reset`.
+- TLS listener (`--tls-port`, certificate, key, optional client CA) and
+  `--tls-replication` for encrypted replica links.
+- Replication backlog and partial resync (`PSYNC <replid> <offset>` /
+  `+CONTINUE`), bounded by `--repl-backlog-size`.
+- `INFO replication` exposes the real offset and full-resync count.
+
 ## [0.8.0] - 2026-11-09
 
 ### Added

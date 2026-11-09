@@ -98,32 +98,35 @@ runs. It is a debugging command, exactly as in Redis.
 
 ### Authentication and ACLs
 
-- `--requirepass` (or `CONFIG SET requirepass`) enables a single default user.
-  Unauthenticated connections get `NOAUTH` for every command except `AUTH`,
-  `HELLO` and `QUIT`.
-- `AUTH <password>` and `AUTH default <password>` are supported, with a
-  constant-time comparison. `HELLO ... AUTH default <password>` also works.
-- `ACL WHOAMI`, `ACL LIST` and `ACL CAT` are implemented. Per-user ACLs, command
-  categories and key patterns are not; there is one `default` user with full
-  access.
-- A replica connecting to a protected primary needs `--masterauth`.
-- The server binds to `127.0.0.1` by default and has no TLS. Put it behind a
-  proxy that terminates TLS if it must cross an untrusted network.
+- `--requirepass` (or `CONFIG SET requirepass`) sets the default user's
+  password. Unauthenticated connections get `NOAUTH` for every command except
+  `AUTH`, `HELLO` and `QUIT`.
+- `AUTH <password>` and `AUTH <user> <password>` are supported, with a
+  constant-time comparison. `HELLO ... AUTH <user> <password>` also works.
+- `ACL SETUSER` defines users with `on`/`off`, `>password`/`nopass`,
+  `~key-pattern`/`allkeys`, `&channel-pattern`/`allchannels`, `+@read`,
+  `+@write`, `+command`, `-command`, `+@all` and `reset`. Denied commands and
+  keys return `NOPERM`.
+- Key patterns are checked with the same glob matcher as `KEYS`; commands that
+  take no keys skip the check.
+- There is no TLS on the plain port and no per-command ACL categories beyond
+  read/write. Use the TLS listener for untrusted networks.
 
 ### Replication
 
 - `REPLICAOF host port` (and the `SLAVEOF` alias) performs a full resync and
   then applies the primary's command stream. `REPLICAOF NO ONE` detaches and
   makes the instance writable again.
-- `PSYNC` always answers `FULLRESYNC`; there is no partial resync, backlog or
-  `master_repl_offset` tracking yet, so every reconnect re-sends the snapshot.
+- A reconnect sends `PSYNC <replid> <offset>`. When the primary still has that
+  offset in its backlog (1 MiB by default) it answers `+CONTINUE` and streams
+  only the missing bytes; otherwise it re-sends the snapshot.
 - The snapshot travels in redlite's own format, not Redis' RDB, so a real Redis
   replica cannot sync from redlite and vice versa.
 - Replicas are read-only (`READONLY You can't write against a read only
   replica.`). Transactions arriving from the primary apply as a unit.
 - Cascading replication works: a replica propagates the stream it receives.
-- `INFO replication` reports the role, link status, primary address and the
-  number of attached replicas.
+- `INFO replication` reports the role, link status, primary address, offset and
+  the number of attached replicas.
 
 ### Keyspace notifications
 
@@ -138,6 +141,15 @@ runs. It is a debugging command, exactly as in Redis.
   messages rather than growing an unbounded buffer.
 - Expired events come from both the background sampler and lazy expiration.
 - Events are not propagated to replicas; each instance emits its own.
+
+### TLS
+
+- Setting `--tls-port` runs a TLS listener alongside the plain one.
+  `--tls-ca-cert-file` makes client certificates mandatory.
+- `--tls-replication` makes a replica dial its primary over TLS, verifying the
+  server against `--tls-ca-cert-file` (or the system pool when unset).
+- The plain port stays unencrypted. Bind it to loopback or firewall it if the
+  TLS listener is the only intended entry point.
 
 ### Transactions
 
