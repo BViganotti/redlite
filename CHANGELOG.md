@@ -4,6 +4,22 @@ All notable changes to redlite are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/).
 
+## [0.5.0] - 2026-11-09
+
+### Added
+
+- Blocking list commands: `BLPOP`, `BRPOP`, `BLMOVE`, `BRPOPLPUSH`, with
+  fractional timeouts, FIFO waiter wakeups, and no blocking inside `MULTI`.
+- `LMOVE` and `RPOPLPUSH`.
+- Snapshots: `SAVE`, `BGSAVE` and `SHUTDOWN SAVE`, with a versioned,
+  checksummed file, atomic writes, startup loading, and a `--dbfilename`
+  setting.
+
+### Changed
+
+- `INFO persistence` reports the RDB fields (`rdb_last_save_time`,
+  `rdb_bgsave_in_progress`, `rdb_last_bgsave_status`).
+
 ## [0.4.0] - 2026-11-09
 
 ### Added
