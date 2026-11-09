@@ -9,6 +9,7 @@ const (
 	TypeHash
 	TypeList
 	TypeSet
+	TypeZSet
 )
 
 // String returns the name Redis uses for the type.
@@ -22,6 +23,8 @@ func (t ValueType) String() string {
 		return "list"
 	case TypeSet:
 		return "set"
+	case TypeZSet:
+		return "zset"
 	default:
 		return "none"
 	}

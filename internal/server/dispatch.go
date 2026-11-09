@@ -20,6 +20,7 @@ type (
 	intReply    int64
 	arrayReply  []any
 	mapReply    []any // alternating key, value
+	pairsReply  []any // alternating element, score; nested pairs in RESP3
 	nullReply   struct{}
 )
 
@@ -50,6 +51,36 @@ func writeReply(w *resp.Writer, v any) error {
 			return errors.New("resp: map reply has an odd number of elements")
 		}
 		if err := w.WriteMapHeader(len(reply) / 2); err != nil {
+			return err
+		}
+		for _, item := range reply {
+			if err := writeReply(w, item); err != nil {
+				return err
+			}
+		}
+		return nil
+	case pairsReply:
+		if len(reply)%2 != 0 {
+			return errors.New("resp: pairs reply has an odd number of elements")
+		}
+		if w.Proto() >= 3 {
+			if err := w.WriteArrayHeader(len(reply) / 2); err != nil {
+				return err
+			}
+			for i := 0; i < len(reply); i += 2 {
+				if err := w.WriteArrayHeader(2); err != nil {
+					return err
+				}
+				if err := writeReply(w, reply[i]); err != nil {
+					return err
+				}
+				if err := writeReply(w, reply[i+1]); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		if err := w.WriteArrayHeader(len(reply)); err != nil {
 			return err
 		}
 		for _, item := range reply {

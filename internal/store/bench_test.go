@@ -93,6 +93,18 @@ func BenchmarkSAdd(b *testing.B) {
 	}
 }
 
+func BenchmarkZAdd(b *testing.B) {
+	s := New()
+	pair := []ScoreMember{{Score: 1, Member: "member"}}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := s.ZAdd("zset", ZAddOptions{}, pair, false); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // TestConcurrentMixedTypes exercises the single keyspace lock from many
 // goroutines. Run with -race to make it meaningful.
 func TestConcurrentMixedTypes(t *testing.T) {

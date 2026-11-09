@@ -699,6 +699,17 @@ func (s *Store) EmitSnapshot(emit func(args [][]byte)) {
 				emit(cmd)
 			}
 			emitExpiry(emit, key, e.expireAt)
+		case *zsetValue:
+			members := v.list.all()
+			for start := 0; start < len(members); start += snapshotChunk {
+				end := min(start+snapshotChunk, len(members))
+				cmd := [][]byte{[]byte("ZADD"), []byte(key)}
+				for _, member := range members[start:end] {
+					cmd = append(cmd, []byte(FormatScore(member.Score)), []byte(member.Member))
+				}
+				emit(cmd)
+			}
+			emitExpiry(emit, key, e.expireAt)
 		}
 	}
 }
