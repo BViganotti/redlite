@@ -149,7 +149,7 @@ func cmdHGetAll(c *client, args [][]byte) (result, error) {
 	if err != nil {
 		return result{}, err
 	}
-	out := make(arrayReply, 0, len(pairs)*2)
+	out := make(mapReply, 0, len(pairs)*2)
 	for _, pair := range pairs {
 		out = append(out, bulkReply(pair.Field), bulkReply(pair.Value))
 	}

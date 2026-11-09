@@ -130,3 +130,22 @@ func TestHashPersistence(t *testing.T) {
 		t.Fatalf("TTL after reload = %d", ttl)
 	}
 }
+
+func TestHGetAllRESP3IsMap(t *testing.T) {
+	c := dial(t, newTestServer(t, nil))
+
+	c.do("HELLO", "3")
+	c.do("HSET", "h", "a", "1", "b", "2")
+
+	reply := c.do("HGETALL", "h")
+	value, ok := reply.(map[string]any)
+	if !ok {
+		t.Fatalf("RESP3 HGETALL returned %T, want map", reply)
+	}
+	if len(value) != 2 {
+		t.Fatalf("HGETALL map has %d entries", len(value))
+	}
+	if got, _ := value["a"].([]byte); string(got) != "1" {
+		t.Fatalf("HGETALL[a] = %q", got)
+	}
+}
