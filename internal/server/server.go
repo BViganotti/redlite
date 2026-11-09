@@ -43,6 +43,8 @@ type Server struct {
 	aofErrors    atomic.Uint64
 	rejected     atomic.Uint64
 	lastSave     atomic.Int64
+	bgsaveActive atomic.Bool
+	rdbOK        atomic.Bool
 	replaying    atomic.Bool
 	shuttingDown atomic.Bool
 
@@ -82,9 +84,14 @@ func New(cfg config.Config, logger *slog.Logger, level *slog.LevelVar) (*Server,
 	}
 	srv.maxClients.Store(int64(cfg.MaxClients))
 	srv.lastSave.Store(srv.started.Unix())
+	srv.rdbOK.Store(true)
 	srv.data.StartExpiry(100*time.Millisecond, 20)
 
 	if !cfg.AppendOnly {
+		if err := srv.loadSnapshot(); err != nil {
+			srv.data.Close()
+			return nil, err
+		}
 		return srv, nil
 	}
 

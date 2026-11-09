@@ -90,6 +90,14 @@ func (s *Server) infoPersistence() string {
 	var b strings.Builder
 	b.WriteString("# Persistence\r\n")
 	writeInfoField(&b, "loading", "0")
+	writeInfoField(&b, "rdb_changes_since_last_save", "0")
+	writeInfoField(&b, "rdb_bgsave_in_progress", bool01(s.bgsaveActive.Load()))
+	writeInfoField(&b, "rdb_last_save_time", strconv.FormatInt(s.lastSave.Load(), 10))
+	status := "ok"
+	if !s.rdbOK.Load() {
+		status = "err"
+	}
+	writeInfoField(&b, "rdb_last_bgsave_status", status)
 	if s.aof == nil {
 		writeInfoField(&b, "aof_enabled", "0")
 	} else {
@@ -231,6 +239,7 @@ func (s *Server) configSnapshot() map[string]string {
 		"bind":        s.cfg.Bind,
 		"port":        strconv.Itoa(s.port()),
 		"dir":         s.cfg.Dir,
+		"dbfilename":  s.cfg.DBFilename,
 		"maxclients":  strconv.FormatInt(s.maxClients.Load(), 10),
 		"appendonly":  boolToYesNo(s.aof != nil),
 		"appendfsync": s.cfg.AppendFsync,
@@ -291,6 +300,13 @@ func boolToYesNo(v bool) string {
 		return "yes"
 	}
 	return "no"
+}
+
+func bool01(v bool) string {
+	if v {
+		return "1"
+	}
+	return "0"
 }
 
 func (s *Server) resetStats() {

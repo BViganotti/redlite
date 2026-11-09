@@ -238,11 +238,19 @@ func cmdShutdown(c *client, args [][]byte) (result, error) {
 	if len(args) > 2 {
 		return result{}, errSyntax
 	}
+	save := false
 	if len(args) == 2 {
 		switch strings.ToUpper(string(args[1])) {
-		case "NOSAVE", "SAVE":
+		case "SAVE":
+			save = true
+		case "NOSAVE":
 		default:
 			return result{}, errSyntax
+		}
+	}
+	if save {
+		if err := c.srv.saveSnapshot(); err != nil {
+			return result{}, fmt.Errorf("ERR %v", err)
 		}
 	}
 	c.srv.requestShutdown()

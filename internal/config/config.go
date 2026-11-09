@@ -15,6 +15,7 @@ type Config struct {
 	Bind        string
 	Port        int
 	Dir         string
+	DBFilename  string
 	AppendOnly  bool
 	AppendFsync string
 	LogLevel    string
@@ -31,6 +32,7 @@ func Default() Config {
 		Bind:        "127.0.0.1",
 		Port:        6379,
 		Dir:         ".",
+		DBFilename:  "dump.rdb",
 		AppendOnly:  false,
 		AppendFsync: "everysec",
 		LogLevel:    "info",
@@ -47,6 +49,11 @@ func (c Config) Addr() string {
 // AOFPath returns the append-only file location inside Dir.
 func (c Config) AOFPath() string {
 	return filepath.Join(c.Dir, "appendonly.aof")
+}
+
+// SnapshotPath returns the snapshot location inside Dir.
+func (c Config) SnapshotPath() string {
+	return filepath.Join(c.Dir, c.DBFilename)
 }
 
 // Level maps LogLevel to a slog level.
@@ -84,6 +91,12 @@ func (c Config) Validate() error {
 	}
 	if c.Dir == "" {
 		problems = append(problems, errors.New("dir must not be empty"))
+	}
+	if c.DBFilename == "" {
+		problems = append(problems, errors.New("dbfilename must not be empty"))
+	}
+	if strings.ContainsAny(c.DBFilename, `/\`) {
+		problems = append(problems, errors.New("dbfilename must not contain a path separator"))
 	}
 	return errors.Join(problems...)
 }

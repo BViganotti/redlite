@@ -15,6 +15,9 @@ func TestDefault(t *testing.T) {
 	if cfg.Port != 6379 {
 		t.Errorf("Port = %d, want 6379", cfg.Port)
 	}
+	if cfg.DBFilename != "dump.rdb" {
+		t.Errorf("DBFilename = %q, want dump.rdb", cfg.DBFilename)
+	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("default config should be valid: %v", err)
 	}
@@ -31,6 +34,9 @@ func TestAddrAndAOFPath(t *testing.T) {
 	}
 	if got, want := cfg.AOFPath(), "/var/lib/redlite/appendonly.aof"; got != want {
 		t.Errorf("AOFPath() = %q, want %q", got, want)
+	}
+	if got, want := cfg.SnapshotPath(), "/var/lib/redlite/dump.rdb"; got != want {
+		t.Errorf("SnapshotPath() = %q, want %q", got, want)
 	}
 }
 
@@ -64,6 +70,8 @@ func TestValidateRejectsBadSettings(t *testing.T) {
 		{"appendfsync", func(c *Config) { c.AppendFsync = "sometimes" }, "appendfsync"},
 		{"loglevel", func(c *Config) { c.LogLevel = "verbose" }, "loglevel"},
 		{"dir", func(c *Config) { c.Dir = "" }, "dir"},
+		{"dbfilename", func(c *Config) { c.DBFilename = "" }, "dbfilename"},
+		{"dbfilename-separator", func(c *Config) { c.DBFilename = "sub/dump.rdb" }, "path separator"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
