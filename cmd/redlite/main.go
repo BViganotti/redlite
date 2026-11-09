@@ -39,6 +39,7 @@ func run(args []string) error {
 	flags.DurationVar(&cfg.Timeout, "timeout", cfg.Timeout, "idle client timeout, 0 disables")
 	flags.StringVar(&cfg.RequirePass, "requirepass", cfg.RequirePass, "password clients must send with AUTH; empty disables authentication")
 	flags.StringVar(&cfg.MasterAuth, "masterauth", cfg.MasterAuth, "password this replica sends to its primary")
+	flags.StringVar(&cfg.NotifyKeyspaceEvents, "notify-keyspace-events", cfg.NotifyKeyspaceEvents, "keyspace notification flags, for example KEA")
 	showVersion := flags.Bool("version", false, "print the version and exit")
 
 	if err := flags.Parse(args); err != nil {

@@ -300,6 +300,9 @@ func (s *Server) executeLocked(c *client, args [][]byte, propagate bool) (result
 		}
 		s.propagate(payload)
 	}
+	if res.mutated && !s.replaying.Load() {
+		s.notifyCommand(args, res)
+	}
 	return res, nil
 }
 

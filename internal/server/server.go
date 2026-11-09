@@ -68,6 +68,11 @@ type Server struct {
 	replicaMode atomic.Bool
 
 	requirePass atomic.Value // string
+
+	notifyConfig atomic.Value // notifyFlags
+	notifyRaw    atomic.Value // string
+	notifyCh     chan string
+	notifyStop   chan struct{}
 }
 
 // New builds a server, opens the append-only file if enabled, and replays it.
@@ -102,6 +107,23 @@ func New(cfg config.Config, logger *slog.Logger, level *slog.LevelVar) (*Server,
 	srv.lastSave.Store(srv.started.Unix())
 	srv.rdbOK.Store(true)
 	srv.requirePass.Store(cfg.RequirePass)
+
+	if err := validateNotifyFlags(cfg.NotifyKeyspaceEvents); err != nil {
+		srv.data.Close()
+		return nil, err
+	}
+	srv.notifyRaw.Store(cfg.NotifyKeyspaceEvents)
+	srv.notifyConfig.Store(parseNotifyFlags(cfg.NotifyKeyspaceEvents))
+	srv.notifyCh = make(chan string, 1024)
+	srv.notifyStop = make(chan struct{})
+	srv.data.SetExpireHook(func(key string) {
+		select {
+		case srv.notifyCh <- key:
+		default:
+		}
+	})
+	go srv.expiryEventLoop()
+
 	srv.data.StartExpiry(100*time.Millisecond, 20)
 
 	if !cfg.AppendOnly {
@@ -318,6 +340,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		// Wake clients blocked in BLPOP/BRPOP/BLMOVE so shutdown cannot hang.
 		s.data.WakeAll()
 		s.stopReplication()
+		close(s.notifyStop)
 
 		done := make(chan struct{})
 		go func() {

@@ -55,7 +55,8 @@ type Store struct {
 	nextVersion atomic.Uint64
 	epoch       atomic.Uint64
 
-	waiters *waiterSet
+	waiters    *waiterSet
+	expireHook func(string)
 
 	now      func() int64
 	stop     chan struct{}
@@ -121,6 +122,7 @@ func (s *Store) expireSample(limit int) {
 		if isExpired(e, now) {
 			delete(s.data, key)
 			s.expired.Add(1)
+			s.fireExpire(key)
 		}
 	}
 }
@@ -164,9 +166,24 @@ func (s *Store) lookupWrite(key string, now int64) (*entry, bool) {
 	if isExpired(e, now) {
 		delete(s.data, key)
 		s.expired.Add(1)
+		s.fireExpire(key)
 		return nil, false
 	}
 	return e, true
+}
+
+// SetExpireHook installs a callback invoked when a key expires. It must not
+// block: it runs while the keyspace lock is held.
+func (s *Store) SetExpireHook(fn func(string)) {
+	s.mu.Lock()
+	s.expireHook = fn
+	s.mu.Unlock()
+}
+
+func (s *Store) fireExpire(key string) {
+	if s.expireHook != nil {
+		s.expireHook(key)
+	}
 }
 
 // WatchState is what WATCH records for a key. Two states compare equal only
@@ -484,6 +501,7 @@ func (s *Store) Expire(key string, expireAt int64, mode ExpireMode) bool {
 	if expireAt <= now {
 		delete(s.data, key)
 		s.expired.Add(1)
+		s.fireExpire(key)
 		return true
 	}
 	e.expireAt = expireAt

@@ -260,6 +260,10 @@ func (s *Server) configSnapshot() map[string]string {
 		"timeout":     strconv.Itoa(int(s.cfg.Timeout.Seconds())),
 		"databases":   "1",
 		"requirepass": s.currentPassword(),
+		"notify-keyspace-events": func() string {
+			value, _ := s.notifyRaw.Load().(string)
+			return value
+		}(),
 	}
 	if s.aof != nil {
 		snapshot["appendfsync"] = string(s.aof.Policy())
@@ -304,6 +308,13 @@ func (s *Server) setConfig(key, value string) error {
 		return nil
 	case "requirepass":
 		s.requirePass.Store(value)
+		return nil
+	case "notify-keyspace-events":
+		if err := validateNotifyFlags(value); err != nil {
+			return err
+		}
+		s.notifyRaw.Store(value)
+		s.notifyConfig.Store(parseNotifyFlags(value))
 		return nil
 	case "appendonly", "dir", "bind", "port":
 		return fmt.Errorf("ERR CONFIG SET '%s' cannot be changed at runtime", key)

@@ -12,17 +12,18 @@ import (
 
 // Config is the complete server settings after flag parsing.
 type Config struct {
-	Bind        string
-	Port        int
-	Dir         string
-	DBFilename  string
-	AppendOnly  bool
-	AppendFsync string
-	LogLevel    string
-	MaxClients  int
-	Timeout     time.Duration
-	RequirePass string
-	MasterAuth  string
+	Bind                 string
+	Port                 int
+	Dir                  string
+	DBFilename           string
+	AppendOnly           bool
+	AppendFsync          string
+	LogLevel             string
+	MaxClients           int
+	Timeout              time.Duration
+	RequirePass          string
+	MasterAuth           string
+	NotifyKeyspaceEvents string
 }
 
 // Default returns the settings used when no flags are supplied.
@@ -31,17 +32,18 @@ type Config struct {
 // server has no business listening on every interface by accident.
 func Default() Config {
 	return Config{
-		Bind:        "127.0.0.1",
-		Port:        6379,
-		Dir:         ".",
-		DBFilename:  "dump.rdb",
-		AppendOnly:  false,
-		AppendFsync: "everysec",
-		LogLevel:    "info",
-		MaxClients:  10000,
-		Timeout:     0,
-		RequirePass: "",
-		MasterAuth:  "",
+		Bind:                 "127.0.0.1",
+		Port:                 6379,
+		Dir:                  ".",
+		DBFilename:           "dump.rdb",
+		AppendOnly:           false,
+		AppendFsync:          "everysec",
+		LogLevel:             "info",
+		MaxClients:           10000,
+		Timeout:              0,
+		RequirePass:          "",
+		MasterAuth:           "",
+		NotifyKeyspaceEvents: "",
 	}
 }
 
