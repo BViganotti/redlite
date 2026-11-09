@@ -45,7 +45,7 @@ duplicate effort.
 
 ## v0.5 — operations
 
-- [ ] Sharded keyspace instead of one `RWMutex`
+- [x] Sharded keyspace instead of one `RWMutex`
 - [ ] Batched AOF writes for throughput
 - [ ] `SLOWLOG`, `LATENCY`, command statistics in `INFO`
 - [ ] Prometheus metrics endpoint

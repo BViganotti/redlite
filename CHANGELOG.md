@@ -4,6 +4,16 @@ All notable changes to redlite are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/).
 
+## [0.10.0] - 2026-11-09
+
+### Changed
+
+- The keyspace is split into 16 shards. Single-key commands take one shard
+  lock, multi-key commands lock the touched shards in order, and whole-keyspace
+  operations lock all of them. WATCH versions and all command semantics are
+  unchanged.
+- Added `NewWithShards` for benchmarks and tests.
+
 ## [0.9.0] - 2026-11-09
 
 ### Added

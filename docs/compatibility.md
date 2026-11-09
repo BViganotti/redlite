@@ -151,6 +151,17 @@ runs. It is a debugging command, exactly as in Redis.
 - The plain port stays unencrypted. Bind it to loopback or firewall it if the
   TLS listener is the only intended entry point.
 
+### Keyspace sharding
+
+- Keys are distributed over 16 shards with FNV-1a. Single-key commands take one
+  shard lock. Multi-key commands (`MSET`, `DEL`, `EXISTS`, `RENAME`, `MOVE`,
+  set algebra) lock the touched shards in ascending index order.
+- Whole-keyspace operations (`KEYS`, `SCAN`, `DBSIZE`, `FLUSHALL`, `RANDOMKEY`,
+  `SAVE`, AOF rewrite) lock every shard.
+- Commands that read several keys through separate lookups (for example
+  `MGET`) are not atomic with respect to concurrent writes. Wrap them in
+  `MULTI`/`EXEC` when a consistent view matters.
+
 ### Transactions
 
 - `MULTI`, `EXEC`, `DISCARD`, `WATCH` and `UNWATCH` are supported.

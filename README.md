@@ -146,6 +146,9 @@ hit and [ROADMAP.md](ROADMAP.md) for what comes next.
   transactions as a unit and reject client writes.
 - **Authentication** uses `requirepass` with a constant-time comparison; every
   command except `AUTH`, `HELLO` and `QUIT` is guarded by `NOAUTH`.
+- **Sharded keyspace**: keys are distributed over 16 shards. Single-key
+  commands take one shard lock; multi-key commands lock the shards they touch
+  in ascending order; whole-keyspace commands lock all of them.
 - **Background AOF rewrite** buffers appends during the rewrite and folds them
   into the new file before the atomic swap.
 - **Sorted sets use a skiplist** with spans, like Redis. Inserts, deletes and
