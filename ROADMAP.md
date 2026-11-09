@@ -4,6 +4,9 @@ This is the work I want to do on redlite, roughly in order. Items map to
 GitHub issues; if you want to take one, comment there first so we do not
 duplicate effort.
 
+For the full plan to reach complete Redis parity, see
+[docs/parity-plan.md](docs/parity-plan.md).
+
 ## v0.1 — the core (done)
 
 - [x] RESP2 parsing and reply encoding
