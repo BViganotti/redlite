@@ -4,6 +4,19 @@ All notable changes to redlite are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/).
 
+## [0.6.0] - 2026-11-09
+
+### Added
+
+- Replication: `REPLICAOF`/`SLAVEOF` with full resync and command streaming,
+  `PSYNC` and `REPLCONF` on the primary, read-only replicas, cascading
+  replication, and real `INFO replication` fields.
+
+### Changed
+
+- Write commands are propagated to attached replicas, including transactions as
+  a `MULTI`/`EXEC` unit.
+
 ## [0.5.0] - 2026-11-09
 
 ### Added

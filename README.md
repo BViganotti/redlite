@@ -90,6 +90,8 @@ docker compose up --build
 
 **Blocking**: `BLPOP` `BRPOP` `BLMOVE` `BRPOPLPUSH`
 
+**Replication**: `REPLICAOF` `SLAVEOF` `PSYNC` `REPLCONF`
+
 **Sets**: `SADD` `SREM` `SCARD` `SISMEMBER` `SMISMEMBER` `SMEMBERS` `SINTER`
 `SUNION` `SDIFF` `SPOP` `SRANDMEMBER` `SSCAN`
 
@@ -101,7 +103,7 @@ docker compose up --build
 `RENAMENX` `EXPIRE` `PEXPIRE` `EXPIREAT` `PEXPIREAT` `TTL` `PTTL` `PERSIST`
 `EXPIRETIME` `PEXPIRETIME` `TOUCH` `DBSIZE` `FLUSHDB` `FLUSHALL`
 
-That is 124 commands. Every value carries an explicit type, so touching a hash
+That is 128 commands. Every value carries an explicit type, so touching a hash
 with `GET` or a string with `HGET` returns `WRONGTYPE` instead of guessing.
 See [docs/compatibility.md](docs/compatibility.md) for the differences you will
 hit and [ROADMAP.md](ROADMAP.md) for what comes next.
@@ -136,6 +138,9 @@ hit and [ROADMAP.md](ROADMAP.md) for what comes next.
 - **Blocking commands** register a waiter per key and are woken by pushes; they
   release the transaction gate while waiting, so a blocked client never holds up
   another client.
+- **Replication** streams a snapshot under the transaction gate and then the
+  command stream, so no write can slip between the two. Replicas apply
+  transactions as a unit and reject client writes.
 - **Sorted sets use a skiplist** with spans, like Redis. Inserts, deletes and
   rank queries are O(log n), and the structure is checked against a naive model
   over thousands of randomised operations.
@@ -183,6 +188,25 @@ $ redis-cli CONFIG GET maxclients
 $ redis-cli CONFIG SET maxclients 2048
 $ redis-cli CONFIG SET appendfsync always
 ```
+
+## Replication
+
+Point a second instance at a primary:
+
+```console
+$ redis-cli -p 6380 REPLICAOF 127.0.0.1 6379
+OK
+$ redis-cli -p 6380 INFO replication
+role:slave
+master_host:127.0.0.1
+master_port:6379
+master_link_status:up
+```
+
+The replica performs a full resync — snapshot plus command stream — then
+applies writes as they happen. It is read-only until `REPLICAOF NO ONE`. Partial
+resync and a replication backlog are not implemented yet, so a dropped link
+triggers a new full resync.
 
 ## Development
 

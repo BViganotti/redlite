@@ -98,6 +98,21 @@ runs. It is a debugging command, exactly as in Redis.
 - No password or ACL support. `HELLO ... AUTH` returns `WRONGPASS`.
 - The server binds to `127.0.0.1` by default. Do not expose it publicly.
 
+### Replication
+
+- `REPLICAOF host port` (and the `SLAVEOF` alias) performs a full resync and
+  then applies the primary's command stream. `REPLICAOF NO ONE` detaches and
+  makes the instance writable again.
+- `PSYNC` always answers `FULLRESYNC`; there is no partial resync, backlog or
+  `master_repl_offset` tracking yet, so every reconnect re-sends the snapshot.
+- The snapshot travels in redlite's own format, not Redis' RDB, so a real Redis
+  replica cannot sync from redlite and vice versa.
+- Replicas are read-only (`READONLY You can't write against a read only
+  replica.`). Transactions arriving from the primary apply as a unit.
+- Cascading replication works: a replica propagates the stream it receives.
+- `INFO replication` reports the role, link status, primary address and the
+  number of attached replicas.
+
 ### Transactions
 
 - `MULTI`, `EXEC`, `DISCARD`, `WATCH` and `UNWATCH` are supported.

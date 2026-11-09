@@ -39,9 +39,9 @@ duplicate effort.
 
 - [x] Snapshots (`SAVE`, `BGSAVE`) with a versioned, checksummed file format
 - [ ] Background AOF rewrite that does not block writers
-- [ ] `REPLICAOF` with full resync and command propagation
+- [x] `REPLICAOF` with full resync and command propagation
 - [ ] Replication backlog and partial resync
-- [ ] `INFO replication` fields that reflect reality
+- [x] `INFO replication` fields that reflect reality
 
 ## v0.5 — operations
 
