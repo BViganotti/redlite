@@ -100,6 +100,24 @@ check3() {
   fi
 }
 
+# check_script pipes a multi-line script through one connection, for commands
+# that need session state such as MULTI/EXEC.
+check_script() {
+  local name=$1
+  local script=$2
+  local redis_reply redlite_reply
+
+  redis_reply=$(printf '%s\n' "$script" | redis-cli -p "$REDIS_PORT" --raw 2>&1)
+  redlite_reply=$(printf '%s\n' "$script" | redis-cli -p "$REDLITE_PORT" --raw 2>&1)
+
+  if [ "$redis_reply" != "$redlite_reply" ]; then
+    echo "MISMATCH (script $name)" >&2
+    echo "  redis:   $(printf '%s' "$redis_reply" | tr '\n' '|')" >&2
+    echo "  redlite: $(printf '%s' "$redlite_reply" | tr '\n' '|')" >&2
+    FAILED=1
+  fi
+}
+
 start
 
 # Strings
@@ -197,6 +215,13 @@ check raw HSET h3 a 1 b 2
 check3 raw HGETALL h3
 check raw ZADD z3 1 a 2 b
 check3 raw ZRANGE z3 0 -1 WITHSCORES
+
+# Transactions
+check_script multi-exec $'MULTI\nSET tx 1\nINCR tx\nGET tx\nEXEC'
+check_script multi-discard $'MULTI\nSET tx 2\nDISCARD'
+check_script multi-error $'MULTI\nSET onlykey\nEXEC'
+check_script exec-without-multi $'EXEC'
+check raw PUBLISH nobody hello
 
 # Errors
 check raw HSET h odd
