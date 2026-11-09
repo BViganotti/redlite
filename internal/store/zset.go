@@ -58,14 +58,14 @@ func newZSetValue() *zsetValue {
 	}
 }
 
-func (s *Store) zsetLocked(key string, now int64, create bool) (*zsetValue, error) {
-	e, ok := s.lookupWrite(key, now)
+func (s *Store) zsetLocked(sh *shard, key string, now int64, create bool) (*zsetValue, error) {
+	e, ok := s.lookupWrite(sh, key, now)
 	if !ok {
 		if !create {
 			return nil, nil
 		}
 		zv := newZSetValue()
-		s.data[key] = &entry{value: zv}
+		sh.data[key] = s.newEntry(zv, 0)
 		s.sets.Add(1)
 		return zv, nil
 	}
@@ -80,10 +80,10 @@ func (s *Store) zsetLocked(key string, now int64, create bool) (*zsetValue, erro
 // and the result carries the resulting score.
 func (s *Store) ZAdd(key string, opts ZAddOptions, pairs []ScoreMember, incr bool) (ZAddResult, error) {
 	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.lockWrite(key)
+	defer s.unlockWrite(sh)
 
-	zv, err := s.zsetLocked(key, now, false)
+	zv, err := s.zsetLocked(sh, key, now, false)
 	if err != nil {
 		return ZAddResult{}, err
 	}
@@ -94,7 +94,8 @@ func (s *Store) ZAdd(key string, opts ZAddOptions, pairs []ScoreMember, incr boo
 	created := false
 	if zv == nil {
 		zv = newZSetValue()
-		s.data[key] = &entry{value: zv}
+		sh.data[key] = s.newEntry(zv, 0)
+		s.sets.Add(1)
 		created = true
 	}
 
@@ -156,9 +157,9 @@ func (s *Store) ZAdd(key string, opts ZAddOptions, pairs []ScoreMember, incr boo
 	}
 
 	if created && zv.list.length == 0 {
-		delete(s.data, key)
+		delete(sh.data, key)
 	} else if res.Changed > 0 {
-		s.stampKey(key)
+		s.touch(sh.data[key])
 	}
 	return res, nil
 }
@@ -166,10 +167,10 @@ func (s *Store) ZAdd(key string, opts ZAddOptions, pairs []ScoreMember, incr boo
 // ZRem removes members and reports how many existed.
 func (s *Store) ZRem(key string, members []string) (int64, error) {
 	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.lockWrite(key)
+	defer s.unlockWrite(sh)
 
-	zv, err := s.zsetLocked(key, now, false)
+	zv, err := s.zsetLocked(sh, key, now, false)
 	if err != nil {
 		return 0, err
 	}
@@ -188,9 +189,9 @@ func (s *Store) ZRem(key string, members []string) (int64, error) {
 		removed++
 	}
 	if len(zv.dict) == 0 {
-		delete(s.data, key)
+		delete(sh.data, key)
 	} else if removed > 0 {
-		s.stampKey(key)
+		s.touch(sh.data[key])
 	}
 	return removed, nil
 }
@@ -198,10 +199,10 @@ func (s *Store) ZRem(key string, members []string) (int64, error) {
 // ZCard returns the cardinality.
 func (s *Store) ZCard(key string) (int64, error) {
 	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	sh := s.lockRead(key)
+	defer s.unlockRead(sh)
 
-	e, ok := s.lookupRead(key, now)
+	e, ok := s.lookupRead(sh, key, now)
 	if !ok {
 		return 0, nil
 	}
@@ -215,10 +216,10 @@ func (s *Store) ZCard(key string) (int64, error) {
 // ZScore returns one member's score.
 func (s *Store) ZScore(key, member string) (float64, bool, error) {
 	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	sh := s.lockRead(key)
+	defer s.unlockRead(sh)
 
-	e, ok := s.lookupRead(key, now)
+	e, ok := s.lookupRead(sh, key, now)
 	if !ok {
 		return 0, false, nil
 	}
@@ -242,10 +243,10 @@ func (s *Store) ZIncrBy(key string, increment float64, member string) (float64, 
 // ZCount counts members inside a score range.
 func (s *Store) ZCount(key string, r ScoreRange) (int64, error) {
 	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	sh := s.lockRead(key)
+	defer s.unlockRead(sh)
 
-	e, ok := s.lookupRead(key, now)
+	e, ok := s.lookupRead(sh, key, now)
 	if !ok {
 		return 0, nil
 	}
@@ -267,10 +268,10 @@ func (s *Store) ZCount(key string, r ScoreRange) (int64, error) {
 // ZRank returns a 0-based rank, or false when the member is missing.
 func (s *Store) ZRank(key, member string, reverse bool) (int64, bool, error) {
 	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	sh := s.lockRead(key)
+	defer s.unlockRead(sh)
 
-	e, ok := s.lookupRead(key, now)
+	e, ok := s.lookupRead(sh, key, now)
 	if !ok {
 		return 0, false, nil
 	}
@@ -296,10 +297,10 @@ func (s *Store) ZRank(key, member string, reverse bool) (int64, bool, error) {
 // score.
 func (s *Store) ZRange(key string, start, stop int64, reverse bool) ([]ScoreMember, error) {
 	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	sh := s.lockRead(key)
+	defer s.unlockRead(sh)
 
-	e, ok := s.lookupRead(key, now)
+	e, ok := s.lookupRead(sh, key, now)
 	if !ok {
 		return nil, nil
 	}
@@ -331,10 +332,10 @@ func (s *Store) ZRange(key string, start, stop int64, reverse bool) ([]ScoreMemb
 // A negative count means "no limit".
 func (s *Store) ZRangeByScore(key string, r ScoreRange, offset, count int, reverse bool) ([]ScoreMember, error) {
 	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	sh := s.lockRead(key)
+	defer s.unlockRead(sh)
 
-	e, ok := s.lookupRead(key, now)
+	e, ok := s.lookupRead(sh, key, now)
 	if !ok {
 		return nil, nil
 	}
@@ -388,10 +389,10 @@ func (s *Store) ZRangeByScore(key string, r ScoreRange, offset, count int, rever
 // ZRemRangeByRank removes an inclusive rank range.
 func (s *Store) ZRemRangeByRank(key string, start, stop int64) (int64, error) {
 	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.lockWrite(key)
+	defer s.unlockWrite(sh)
 
-	zv, err := s.zsetLocked(key, now, false)
+	zv, err := s.zsetLocked(sh, key, now, false)
 	if err != nil {
 		return 0, err
 	}
@@ -415,9 +416,9 @@ func (s *Store) ZRemRangeByRank(key string, start, stop int64) (int64, error) {
 		zv.list.delete(member.Member, member.Score)
 	}
 	if len(zv.dict) == 0 {
-		delete(s.data, key)
+		delete(sh.data, key)
 	} else if len(members) > 0 {
-		s.stampKey(key)
+		s.touch(sh.data[key])
 	}
 	return int64(len(members)), nil
 }
@@ -425,10 +426,10 @@ func (s *Store) ZRemRangeByRank(key string, start, stop int64) (int64, error) {
 // ZRemRangeByScore removes every member inside a score range.
 func (s *Store) ZRemRangeByScore(key string, r ScoreRange) (int64, error) {
 	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.lockWrite(key)
+	defer s.unlockWrite(sh)
 
-	zv, err := s.zsetLocked(key, now, false)
+	zv, err := s.zsetLocked(sh, key, now, false)
 	if err != nil {
 		return 0, err
 	}
@@ -448,9 +449,9 @@ func (s *Store) ZRemRangeByScore(key string, r ScoreRange) (int64, error) {
 		zv.list.delete(member.Member, member.Score)
 	}
 	if len(zv.dict) == 0 {
-		delete(s.data, key)
+		delete(sh.data, key)
 	} else if len(members) > 0 {
-		s.stampKey(key)
+		s.touch(sh.data[key])
 	}
 	return int64(len(members)), nil
 }
@@ -461,10 +462,10 @@ func (s *Store) ZScan(key string, cursor uint64, pattern string, count int) (uin
 		count = 10
 	}
 	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	sh := s.lockRead(key)
+	defer s.unlockRead(sh)
 
-	e, ok := s.lookupRead(key, now)
+	e, ok := s.lookupRead(sh, key, now)
 	if !ok {
 		return 0, nil, nil
 	}

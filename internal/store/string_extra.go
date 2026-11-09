@@ -20,10 +20,10 @@ const maxStringSize = 512 * 1024 * 1024
 // index rules.
 func (s *Store) GetRange(key string, start, end int64) ([]byte, error) {
 	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	sh := s.lockRead(key)
+	defer s.unlockRead(sh)
 
-	e, ok := s.lookupRead(key, now)
+	e, ok := s.lookupRead(sh, key, now)
 	if !ok {
 		return nil, nil
 	}
@@ -58,10 +58,10 @@ func (s *Store) GetRange(key string, start, end int64) ([]byte, error) {
 // returns the resulting length.
 func (s *Store) SetRange(key string, offset int64, value []byte) (int64, error) {
 	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.lockWrite(key)
+	defer s.unlockWrite(sh)
 
-	e, ok := s.lookupWrite(key, now)
+	e, ok := s.lookupWrite(sh, key, now)
 	var sv *stringValue
 	if ok {
 		current, isString := e.value.(*stringValue)
@@ -92,12 +92,12 @@ func (s *Store) SetRange(key string, offset int64, value []byte) (int64, error) 
 	copy(data[offset:], value)
 
 	if sv == nil {
-		s.data[key] = &entry{value: &stringValue{data: data}}
+		sh.data[key] = s.newEntry(&stringValue{data: data}, 0)
 		s.sets.Add(1)
 	} else {
 		sv.data = data
+		s.touch(e)
 	}
-	s.stampKey(key)
 	return int64(len(data)), nil
 }
 
@@ -106,10 +106,10 @@ func (s *Store) SetRange(key string, offset int64, value []byte) (int64, error) 
 // result.
 func (s *Store) IncrByFloat(key, increment string) (string, error) {
 	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.lockWrite(key)
+	defer s.unlockWrite(sh)
 
-	e, ok := s.lookupWrite(key, now)
+	e, ok := s.lookupWrite(sh, key, now)
 	current := "0"
 	var sv *stringValue
 	if ok {
@@ -127,12 +127,12 @@ func (s *Store) IncrByFloat(key, increment string) (string, error) {
 	}
 
 	if sv == nil {
-		s.data[key] = &entry{value: &stringValue{data: []byte(result)}}
+		sh.data[key] = s.newEntry(&stringValue{data: []byte(result)}, 0)
 		s.sets.Add(1)
 	} else {
 		sv.data = []byte(result)
+		s.touch(e)
 	}
-	s.stampKey(key)
 	return result, nil
 }
 

@@ -1,13 +1,10 @@
 // Package store implements the in-memory keyspace, expiration, and the
 // append-only file.
 //
-// Every value carries an explicit type. Commands that touch a key with the
-// wrong type return ErrWrongType instead of guessing, and the type is what TYPE
-// and the append-only-file rewriter act on.
-//
-// The keyspace is protected by a single reader-writer mutex. That is the
-// simplest thing that is correct; sharding is tracked in ROADMAP.md as a
-// performance task rather than a correctness one.
+// The keyspace is split into shards. Single-key operations take the read gate
+// plus one shard lock, so writes to different keys proceed concurrently.
+// Multi-key and whole-keyspace operations take the write gate, which excludes
+// every other operation for the duration.
 package store
 
 import (
@@ -19,6 +16,10 @@ import (
 	"sync/atomic"
 	"time"
 )
+
+// defaultShardCount is a power of two and comfortably above the number of
+// CPUs a small deployment will use.
+const defaultShardCount = 16
 
 // Errors returned by value-changing operations. Command handlers turn these
 // into Redis error replies.
@@ -34,6 +35,11 @@ type entry struct {
 	version  uint64
 }
 
+type shard struct {
+	mu   sync.RWMutex
+	data map[string]*entry
+}
+
 // Stats are counters that INFO reports.
 type Stats struct {
 	Hits     uint64
@@ -44,8 +50,7 @@ type Stats struct {
 
 // Store is a concurrent keyspace.
 type Store struct {
-	mu   sync.RWMutex
-	data map[string]*entry
+	shards []*shard
 
 	hits    atomic.Uint64
 	misses  atomic.Uint64
@@ -55,8 +60,8 @@ type Store struct {
 	nextVersion atomic.Uint64
 	epoch       atomic.Uint64
 
-	waiters    *waiterSet
-	expireHook func(string)
+	waiters *waiterSet
+	hook    atomic.Value // func(string)
 
 	now      func() int64
 	stop     chan struct{}
@@ -70,15 +75,118 @@ func New() *Store {
 
 // NewWithClock returns a store driven by an injectable clock, for tests.
 func NewWithClock(now func() int64) *Store {
+	return newStore(now, defaultShardCount)
+}
+
+// NewWithShards returns a store with a custom shard count, for benchmarks.
+func NewWithShards(count int) *Store {
+	return newStore(nil, count)
+}
+
+func newStore(now func() int64, shardCount int) *Store {
 	if now == nil {
 		now = func() int64 { return time.Now().UnixMilli() }
 	}
+	if shardCount < 1 {
+		shardCount = 1
+	}
+	shards := make([]*shard, shardCount)
+	for i := range shards {
+		shards[i] = &shard{data: make(map[string]*entry)}
+	}
 	return &Store{
-		data:    make(map[string]*entry),
+		shards:  shards,
 		now:     now,
 		stop:    make(chan struct{}),
 		waiters: newWaiterSet(),
 	}
+}
+
+// shardIndex hashes a key with FNV-1a.
+func (s *Store) shardIndex(key string) int {
+	var hash uint32 = 2166136261
+	for i := 0; i < len(key); i++ {
+		hash ^= uint32(key[i])
+		hash *= 16777619
+	}
+	return int(hash % uint32(len(s.shards)))
+}
+
+func (s *Store) shardFor(key string) *shard {
+	return s.shards[s.shardIndex(key)]
+}
+
+func (s *Store) lockWrite(key string) *shard {
+	sh := s.shardFor(key)
+	sh.mu.Lock()
+	return sh
+}
+
+func (s *Store) unlockWrite(sh *shard) {
+	sh.mu.Unlock()
+}
+
+func (s *Store) lockRead(key string) *shard {
+	sh := s.shardFor(key)
+	sh.mu.RLock()
+	return sh
+}
+
+func (s *Store) unlockRead(sh *shard) {
+	sh.mu.RUnlock()
+}
+
+// lockKeys locks the distinct shards for keys in ascending index order, which
+// makes multi-key operations deadlock-free.
+func (s *Store) lockKeys(keys []string) []*shard {
+	indices := make([]int, 0, len(keys))
+	for _, key := range keys {
+		indices = append(indices, s.shardIndex(key))
+	}
+	sort.Ints(indices)
+
+	locked := make([]*shard, 0, len(indices))
+	previous := -1
+	for _, index := range indices {
+		if index == previous {
+			continue
+		}
+		previous = index
+		sh := s.shards[index]
+		sh.mu.Lock()
+		locked = append(locked, sh)
+	}
+	return locked
+}
+
+func (s *Store) unlockKeys(locked []*shard) {
+	for i := len(locked) - 1; i >= 0; i-- {
+		locked[i].mu.Unlock()
+	}
+}
+
+// lockAllShards locks every shard in order for whole-keyspace operations.
+func (s *Store) lockAllShards() []*shard {
+	locked := make([]*shard, 0, len(s.shards))
+	for _, sh := range s.shards {
+		sh.mu.Lock()
+		locked = append(locked, sh)
+	}
+	return locked
+}
+
+func (s *Store) unlockAllShards(locked []*shard) {
+	for i := len(locked) - 1; i >= 0; i-- {
+		locked[i].mu.Unlock()
+	}
+}
+
+func (s *Store) newEntry(v value, expireAt int64) *entry {
+	return &entry{value: v, expireAt: expireAt, version: s.nextVersion.Add(1)}
+}
+
+func (s *Store) touch(e *entry) {
+	e.version = s.nextVersion.Add(1)
 }
 
 // StartExpiry runs the background expiration sampler. Redis samples a few keys
@@ -111,19 +219,26 @@ func (s *Store) Close() {
 
 func (s *Store) expireSample(limit int) {
 	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	seen := 0
-	for key, e := range s.data {
-		if seen >= limit {
+	remaining := limit
+	for _, sh := range s.shards {
+		if remaining <= 0 {
 			return
 		}
-		seen++
-		if isExpired(e, now) {
-			delete(s.data, key)
-			s.expired.Add(1)
-			s.fireExpire(key)
+		sh.mu.Lock()
+		seen := 0
+		for key, e := range sh.data {
+			if seen >= remaining {
+				break
+			}
+			seen++
+			if isExpired(e, now) {
+				delete(sh.data, key)
+				s.expired.Add(1)
+				s.fireExpire(key)
+			}
 		}
+		sh.mu.Unlock()
+		remaining -= seen
 	}
 }
 
@@ -145,45 +260,47 @@ func (s *Store) ResetStats() {
 	s.sets.Store(0)
 }
 
-// lookupRead returns a live entry. The caller must hold at least a read lock.
-// Expired entries are reported as missing but not deleted, because deletion
-// requires the write lock.
-func (s *Store) lookupRead(key string, now int64) (*entry, bool) {
-	e, ok := s.data[key]
+// SetExpireHook installs a callback invoked when a key expires. It must not
+// block: it runs while a shard lock is held.
+func (s *Store) SetExpireHook(fn func(string)) {
+	s.hook.Store(fn)
+}
+
+func (s *Store) fireExpire(key string) {
+	hook, _ := s.hook.Load().(func(string))
+	if hook != nil {
+		hook(key)
+	}
+}
+
+// leakRead reports whether an entry is expired without deleting it.
+func isExpired(e *entry, now int64) bool {
+	return e.expireAt != 0 && e.expireAt <= now
+}
+
+// lookupRead returns a live entry. The caller must hold at least a shard read
+// lock. Expired entries are reported as missing but not deleted.
+func (s *Store) lookupRead(sh *shard, key string, now int64) (*entry, bool) {
+	e, ok := sh.data[key]
 	if !ok || isExpired(e, now) {
 		return nil, false
 	}
 	return e, true
 }
 
-// lookupWrite returns a live entry and removes it if it has expired. The caller
-// must hold the write lock.
-func (s *Store) lookupWrite(key string, now int64) (*entry, bool) {
-	e, ok := s.data[key]
+// lookupWrite returns a live entry and removes it if it has expired.
+func (s *Store) lookupWrite(sh *shard, key string, now int64) (*entry, bool) {
+	e, ok := sh.data[key]
 	if !ok {
 		return nil, false
 	}
 	if isExpired(e, now) {
-		delete(s.data, key)
+		delete(sh.data, key)
 		s.expired.Add(1)
 		s.fireExpire(key)
 		return nil, false
 	}
 	return e, true
-}
-
-// SetExpireHook installs a callback invoked when a key expires. It must not
-// block: it runs while the keyspace lock is held.
-func (s *Store) SetExpireHook(fn func(string)) {
-	s.mu.Lock()
-	s.expireHook = fn
-	s.mu.Unlock()
-}
-
-func (s *Store) fireExpire(key string) {
-	if s.expireHook != nil {
-		s.expireHook(key)
-	}
 }
 
 // WatchState is what WATCH records for a key. Two states compare equal only
@@ -197,30 +314,22 @@ type WatchState struct {
 // Watch returns the current state of a key for optimistic locking.
 func (s *Store) Watch(key string) WatchState {
 	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	e, ok := s.lookupRead(key, now)
+	sh := s.lockRead(key)
+	defer s.unlockRead(sh)
+	e, ok := s.lookupRead(sh, key, now)
 	if !ok {
 		return WatchState{Epoch: s.epoch.Load()}
 	}
 	return WatchState{Version: e.version, Exists: true, Epoch: s.epoch.Load()}
 }
 
-// stampKey assigns a fresh version to a key after a modification. The caller
-// must hold the write lock.
-func (s *Store) stampKey(key string) {
-	if e, ok := s.data[key]; ok {
-		e.version = s.nextVersion.Add(1)
-	}
-}
-
 // Get returns a copy of the string stored at key.
 func (s *Store) Get(key string) ([]byte, bool, error) {
 	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	sh := s.lockRead(key)
+	defer s.unlockRead(sh)
 
-	e, ok := s.lookupRead(key, now)
+	e, ok := s.lookupRead(sh, key, now)
 	if !ok {
 		s.misses.Add(1)
 		return nil, false, nil
@@ -255,10 +364,10 @@ type SetResult struct {
 // Set stores value at key, replacing a value of any type unless Get is set.
 func (s *Store) Set(key string, value []byte, opts SetOptions) (SetResult, error) {
 	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.lockWrite(key)
+	defer s.unlockWrite(sh)
 
-	current, exists := s.lookupWrite(key, now)
+	current, exists := s.lookupWrite(sh, key, now)
 
 	var res SetResult
 	if exists {
@@ -287,14 +396,10 @@ func (s *Store) Set(key string, value []byte, opts SetOptions) (SetResult, error
 	s.sets.Add(1)
 
 	if expireAt != 0 && expireAt <= now {
-		delete(s.data, key)
+		delete(sh.data, key)
 		return res, nil
 	}
-	s.data[key] = &entry{
-		value:    &stringValue{data: clone(value)},
-		expireAt: expireAt,
-	}
-	s.stampKey(key)
+	sh.data[key] = s.newEntry(&stringValue{data: clone(value)}, expireAt)
 	return res, nil
 }
 
@@ -304,31 +409,40 @@ type KeyValue struct {
 	Value []byte
 }
 
-// SetMany writes every pair under one lock so the batch is atomic to readers.
-// It replaces values of any type, as MSET does.
+// SetMany writes every pair under the global gate so the batch is atomic.
 func (s *Store) SetMany(pairs []KeyValue) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	keys := make([]string, 0, len(pairs))
 	for _, pair := range pairs {
-		s.data[pair.Key] = &entry{value: &stringValue{data: clone(pair.Value)}}
-		s.stampKey(pair.Key)
+		keys = append(keys, pair.Key)
+	}
+	locked := s.lockKeys(keys)
+	defer s.unlockKeys(locked)
+	for _, pair := range pairs {
+		sh := s.shardFor(pair.Key)
+		sh.data[pair.Key] = s.newEntry(&stringValue{data: clone(pair.Value)}, 0)
 	}
 	s.sets.Add(uint64(len(pairs)))
 }
 
 // SetManyNX writes all pairs only if none of the keys exists.
 func (s *Store) SetManyNX(pairs []KeyValue) bool {
-	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	keys := make([]string, 0, len(pairs))
 	for _, pair := range pairs {
-		if _, ok := s.lookupWrite(pair.Key, now); ok {
+		keys = append(keys, pair.Key)
+	}
+	locked := s.lockKeys(keys)
+	defer s.unlockKeys(locked)
+
+	now := s.now()
+	for _, pair := range pairs {
+		sh := s.shardFor(pair.Key)
+		if _, ok := s.lookupWrite(sh, pair.Key, now); ok {
 			return false
 		}
 	}
 	for _, pair := range pairs {
-		s.data[pair.Key] = &entry{value: &stringValue{data: clone(pair.Value)}}
-		s.stampKey(pair.Key)
+		sh := s.shardFor(pair.Key)
+		sh.data[pair.Key] = s.newEntry(&stringValue{data: clone(pair.Value)}, 0)
 	}
 	s.sets.Add(uint64(len(pairs)))
 	return true
@@ -336,17 +450,18 @@ func (s *Store) SetManyNX(pairs []KeyValue) bool {
 
 // Del removes keys and reports how many existed and were not already expired.
 func (s *Store) Del(keys []string) int64 {
-	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	locked := s.lockKeys(keys)
+	defer s.unlockKeys(locked)
 
+	now := s.now()
 	var removed int64
 	for _, key := range keys {
-		e, ok := s.data[key]
+		sh := s.shardFor(key)
+		e, ok := sh.data[key]
 		if !ok {
 			continue
 		}
-		delete(s.data, key)
+		delete(sh.data, key)
 		if isExpired(e, now) {
 			s.expired.Add(1)
 			continue
@@ -358,13 +473,13 @@ func (s *Store) Del(keys []string) int64 {
 
 // Exists counts how many of keys exist, once per occurrence.
 func (s *Store) Exists(keys []string) int64 {
-	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	locked := s.lockKeys(keys)
+	defer s.unlockKeys(locked)
 
+	now := s.now()
 	var n int64
 	for _, key := range keys {
-		if _, ok := s.lookupRead(key, now); ok {
+		if _, ok := s.lookupRead(s.shardFor(key), key, now); ok {
 			n++
 		}
 	}
@@ -374,9 +489,9 @@ func (s *Store) Exists(keys []string) int64 {
 // Type reports the value type of key, or "none".
 func (s *Store) Type(key string) string {
 	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	e, ok := s.lookupRead(key, now)
+	sh := s.lockRead(key)
+	defer s.unlockRead(sh)
+	e, ok := s.lookupRead(sh, key, now)
 	if !ok {
 		return "none"
 	}
@@ -386,13 +501,13 @@ func (s *Store) Type(key string) string {
 // Append appends suffix to the string at key and returns the new length.
 func (s *Store) Append(key string, suffix []byte) (int, error) {
 	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.lockWrite(key)
+	defer s.unlockWrite(sh)
 
-	e, ok := s.lookupWrite(key, now)
+	e, ok := s.lookupWrite(sh, key, now)
 	if !ok {
-		s.data[key] = &entry{value: &stringValue{data: clone(suffix)}}
-		s.stampKey(key)
+		entry := s.newEntry(&stringValue{data: clone(suffix)}, 0)
+		sh.data[key] = entry
 		s.sets.Add(1)
 		return len(suffix), nil
 	}
@@ -401,16 +516,16 @@ func (s *Store) Append(key string, suffix []byte) (int, error) {
 		return 0, ErrWrongType
 	}
 	sv.data = append(sv.data, suffix...)
-	s.stampKey(key)
+	s.touch(e)
 	return len(sv.data), nil
 }
 
 // StrLen returns the length of the string at key.
 func (s *Store) StrLen(key string) (int64, error) {
 	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	e, ok := s.lookupRead(key, now)
+	sh := s.lockRead(key)
+	defer s.unlockRead(sh)
+	e, ok := s.lookupRead(sh, key, now)
 	if !ok {
 		return 0, nil
 	}
@@ -425,10 +540,10 @@ func (s *Store) StrLen(key string) (int64, error) {
 // zero.
 func (s *Store) IncrBy(key string, delta int64) (int64, error) {
 	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.lockWrite(key)
+	defer s.unlockWrite(sh)
 
-	e, ok := s.lookupWrite(key, now)
+	e, ok := s.lookupWrite(sh, key, now)
 	var current int64
 	if ok {
 		sv, isString := e.value.(*stringValue)
@@ -449,11 +564,11 @@ func (s *Store) IncrBy(key string, delta int64) (int64, error) {
 	if ok {
 		sv := e.value.(*stringValue)
 		sv.data = strconv.AppendInt(sv.data[:0], next, 10)
+		s.touch(e)
 	} else {
-		s.data[key] = &entry{value: &stringValue{data: strconv.AppendInt(nil, next, 10)}}
+		sh.data[key] = s.newEntry(&stringValue{data: strconv.AppendInt(nil, next, 10)}, 0)
 		s.sets.Add(1)
 	}
-	s.stampKey(key)
 	return next, nil
 }
 
@@ -471,10 +586,10 @@ const (
 // Expire sets the absolute expiry of key to expireAt (unix milliseconds).
 func (s *Store) Expire(key string, expireAt int64, mode ExpireMode) bool {
 	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.lockWrite(key)
+	defer s.unlockWrite(sh)
 
-	e, ok := s.lookupWrite(key, now)
+	e, ok := s.lookupWrite(sh, key, now)
 	if !ok {
 		return false
 	}
@@ -499,13 +614,13 @@ func (s *Store) Expire(key string, expireAt int64, mode ExpireMode) bool {
 	}
 
 	if expireAt <= now {
-		delete(s.data, key)
+		delete(sh.data, key)
 		s.expired.Add(1)
 		s.fireExpire(key)
 		return true
 	}
 	e.expireAt = expireAt
-	s.stampKey(key)
+	s.touch(e)
 	return true
 }
 
@@ -519,9 +634,9 @@ const (
 // the Expiry constants.
 func (s *Store) TTLMillis(key string) int64 {
 	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	e, ok := s.lookupRead(key, now)
+	sh := s.lockRead(key)
+	defer s.unlockRead(sh)
+	e, ok := s.lookupRead(sh, key, now)
 	if !ok {
 		return ExpiryMissing
 	}
@@ -535,9 +650,9 @@ func (s *Store) TTLMillis(key string) int64 {
 // of the Expiry constants.
 func (s *Store) ExpireTimeMillis(key string) int64 {
 	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	e, ok := s.lookupRead(key, now)
+	sh := s.lockRead(key)
+	defer s.unlockRead(sh)
+	e, ok := s.lookupRead(sh, key, now)
 	if !ok {
 		return ExpiryMissing
 	}
@@ -550,9 +665,9 @@ func (s *Store) ExpireTimeMillis(key string) int64 {
 // Persist removes the expiry from key.
 func (s *Store) Persist(key string) bool {
 	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.lookupWrite(key, now)
+	sh := s.lockWrite(key)
+	defer s.unlockWrite(sh)
+	e, ok := s.lookupWrite(sh, key, now)
 	if !ok {
 		return false
 	}
@@ -560,23 +675,25 @@ func (s *Store) Persist(key string) bool {
 		return false
 	}
 	e.expireAt = 0
-	s.stampKey(key)
+	s.touch(e)
 	return true
 }
 
 // Keys returns every live key matching pattern.
 func (s *Store) Keys(pattern string) []string {
-	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	locked := s.lockAllShards()
+	defer s.unlockAllShards(locked)
 
-	out := make([]string, 0, len(s.data))
-	for key, e := range s.data {
-		if isExpired(e, now) {
-			continue
-		}
-		if pattern == "*" || Match(pattern, key) {
-			out = append(out, key)
+	now := s.now()
+	out := make([]string, 0, 32)
+	for _, sh := range s.shards {
+		for key, e := range sh.data {
+			if isExpired(e, now) {
+				continue
+			}
+			if pattern == "*" || Match(pattern, key) {
+				out = append(out, key)
+			}
 		}
 	}
 	sort.Strings(out)
@@ -587,25 +704,27 @@ func (s *Store) Keys(pattern string) []string {
 // count matching keys.
 //
 // The cursor is an index into a sorted snapshot of the keyspace. That keeps
-// pagination correct and deterministic, at the cost of sorting on every call;
-// a bucket-based cursor is tracked in ROADMAP.md.
+// pagination correct and deterministic, at the cost of sorting on every call.
 func (s *Store) Scan(cursor uint64, pattern string, count int, typeName string) (uint64, []string) {
 	if count <= 0 {
 		count = 10
 	}
+	locked := s.lockAllShards()
+	defer s.unlockAllShards(locked)
+
 	now := s.now()
-	s.mu.RLock()
-	keys := make([]string, 0, len(s.data))
-	for key, e := range s.data {
-		if isExpired(e, now) {
-			continue
+	keys := make([]string, 0, 32)
+	for _, sh := range s.shards {
+		for key, e := range sh.data {
+			if isExpired(e, now) {
+				continue
+			}
+			if typeName != "" && typeName != "string" && typeName != e.value.kind().String() {
+				continue
+			}
+			keys = append(keys, key)
 		}
-		if typeName != "" && typeName != "string" && typeName != e.value.kind().String() {
-			continue
-		}
-		keys = append(keys, key)
 	}
-	s.mu.RUnlock()
 	sort.Strings(keys)
 
 	if cursor >= uint64(len(keys)) {
@@ -633,13 +752,15 @@ func (s *Store) Scan(cursor uint64, pattern string, count int, typeName string) 
 
 // RandomKey returns an arbitrary live key, if one exists.
 func (s *Store) RandomKey() (string, bool) {
-	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	locked := s.lockAllShards()
+	defer s.unlockAllShards(locked)
 
-	for key, e := range s.data {
-		if !isExpired(e, now) {
-			return key, true
+	now := s.now()
+	for _, sh := range s.shards {
+		for key, e := range sh.data {
+			if !isExpired(e, now) {
+				return key, true
+			}
 		}
 	}
 	return "", false
@@ -647,36 +768,40 @@ func (s *Store) RandomKey() (string, bool) {
 
 // Rename moves src to dst. It reports false if src does not exist.
 func (s *Store) Rename(src, dst string) bool {
-	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	locked := s.lockKeys([]string{src, dst})
+	defer s.unlockKeys(locked)
 
-	e, ok := s.lookupWrite(src, now)
+	now := s.now()
+	srcShard := s.shardFor(src)
+	e, ok := s.lookupWrite(srcShard, src, now)
 	if !ok {
 		return false
 	}
-	delete(s.data, src)
-	s.data[dst] = e
-	s.stampKey(dst)
+	delete(srcShard.data, src)
+	dstShard := s.shardFor(dst)
+	dstShard.data[dst] = e
+	s.touch(e)
 	return true
 }
 
 // RenameNX moves src to dst only if dst does not exist.
 func (s *Store) RenameNX(src, dst string) bool {
-	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	locked := s.lockKeys([]string{src, dst})
+	defer s.unlockKeys(locked)
 
-	e, ok := s.lookupWrite(src, now)
+	now := s.now()
+	srcShard := s.shardFor(src)
+	e, ok := s.lookupWrite(srcShard, src, now)
 	if !ok {
 		return false
 	}
-	if _, exists := s.lookupWrite(dst, now); exists {
+	dstShard := s.shardFor(dst)
+	if _, exists := s.lookupWrite(dstShard, dst, now); exists {
 		return false
 	}
-	delete(s.data, src)
-	s.data[dst] = e
-	s.stampKey(dst)
+	delete(srcShard.data, src)
+	dstShard.data[dst] = e
+	s.touch(e)
 	return true
 }
 
@@ -688,17 +813,19 @@ func (s *Store) DBSize() int64 {
 
 // KeyCounts reports the number of live keys and how many of them expire.
 func (s *Store) KeyCounts() (keys, expiring int64) {
-	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	locked := s.lockAllShards()
+	defer s.unlockAllShards(locked)
 
-	for _, e := range s.data {
-		if isExpired(e, now) {
-			continue
-		}
-		keys++
-		if e.expireAt != 0 {
-			expiring++
+	now := s.now()
+	for _, sh := range s.shards {
+		for _, e := range sh.data {
+			if isExpired(e, now) {
+				continue
+			}
+			keys++
+			if e.expireAt != 0 {
+				expiring++
+			}
 		}
 	}
 	return keys, expiring
@@ -706,75 +833,82 @@ func (s *Store) KeyCounts() (keys, expiring int64) {
 
 // Flush removes every key.
 func (s *Store) Flush() {
-	s.mu.Lock()
-	s.data = make(map[string]*entry)
+	locked := s.lockAllShards()
+	defer s.unlockAllShards(locked)
+	for _, sh := range s.shards {
+		sh.data = make(map[string]*entry)
+	}
 	s.epoch.Add(1)
-	s.mu.Unlock()
 }
 
 // EmitSnapshot calls emit with canonical commands that recreate the keyspace.
-// The append-only-file rewriter uses it; emit must not retain the slices.
 func (s *Store) EmitSnapshot(emit func(args [][]byte)) {
-	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	locked := s.lockAllShards()
+	defer s.unlockAllShards(locked)
 
-	for key, e := range s.data {
-		if isExpired(e, now) {
-			continue
+	now := s.now()
+	for _, sh := range s.shards {
+		for key, e := range sh.data {
+			if isExpired(e, now) {
+				continue
+			}
+			emitEntry(emit, key, e)
 		}
-		switch v := e.value.(type) {
-		case *stringValue:
-			cmd := [][]byte{[]byte("SET"), []byte(key), clone(v.data)}
-			if e.expireAt != 0 {
-				cmd = append(cmd, []byte("PXAT"), []byte(strconv.FormatInt(e.expireAt, 10)))
+	}
+}
+
+func emitEntry(emit func(args [][]byte), key string, e *entry) {
+	switch v := e.value.(type) {
+	case *stringValue:
+		cmd := [][]byte{[]byte("SET"), []byte(key), clone(v.data)}
+		if e.expireAt != 0 {
+			cmd = append(cmd, []byte("PXAT"), []byte(strconv.FormatInt(e.expireAt, 10)))
+		}
+		emit(cmd)
+	case *hashValue:
+		fields := sortedKeys(v.fields)
+		for start := 0; start < len(fields); start += snapshotChunk {
+			end := min(start+snapshotChunk, len(fields))
+			cmd := [][]byte{[]byte("HSET"), []byte(key)}
+			for _, field := range fields[start:end] {
+				cmd = append(cmd, []byte(field), clone(v.fields[field]))
 			}
 			emit(cmd)
-		case *hashValue:
-			fields := sortedKeys(v.fields)
-			for start := 0; start < len(fields); start += snapshotChunk {
-				end := min(start+snapshotChunk, len(fields))
-				cmd := [][]byte{[]byte("HSET"), []byte(key)}
-				for _, field := range fields[start:end] {
-					cmd = append(cmd, []byte(field), clone(v.fields[field]))
-				}
-				emit(cmd)
-			}
-			emitExpiry(emit, key, e.expireAt)
-		case *listValue:
-			items := v.toSlice()
-			for start := 0; start < len(items); start += snapshotChunk {
-				end := min(start+snapshotChunk, len(items))
-				cmd := [][]byte{[]byte("RPUSH"), []byte(key)}
-				for _, item := range items[start:end] {
-					cmd = append(cmd, clone(item))
-				}
-				emit(cmd)
-			}
-			emitExpiry(emit, key, e.expireAt)
-		case *setValue:
-			members := sortedSetKeys(v.members)
-			for start := 0; start < len(members); start += snapshotChunk {
-				end := min(start+snapshotChunk, len(members))
-				cmd := [][]byte{[]byte("SADD"), []byte(key)}
-				for _, member := range members[start:end] {
-					cmd = append(cmd, []byte(member))
-				}
-				emit(cmd)
-			}
-			emitExpiry(emit, key, e.expireAt)
-		case *zsetValue:
-			members := v.list.all()
-			for start := 0; start < len(members); start += snapshotChunk {
-				end := min(start+snapshotChunk, len(members))
-				cmd := [][]byte{[]byte("ZADD"), []byte(key)}
-				for _, member := range members[start:end] {
-					cmd = append(cmd, []byte(FormatScore(member.Score)), []byte(member.Member))
-				}
-				emit(cmd)
-			}
-			emitExpiry(emit, key, e.expireAt)
 		}
+		emitExpiry(emit, key, e.expireAt)
+	case *listValue:
+		items := v.toSlice()
+		for start := 0; start < len(items); start += snapshotChunk {
+			end := min(start+snapshotChunk, len(items))
+			cmd := [][]byte{[]byte("RPUSH"), []byte(key)}
+			for _, item := range items[start:end] {
+				cmd = append(cmd, clone(item))
+			}
+			emit(cmd)
+		}
+		emitExpiry(emit, key, e.expireAt)
+	case *setValue:
+		members := sortedSetKeys(v.members)
+		for start := 0; start < len(members); start += snapshotChunk {
+			end := min(start+snapshotChunk, len(members))
+			cmd := [][]byte{[]byte("SADD"), []byte(key)}
+			for _, member := range members[start:end] {
+				cmd = append(cmd, []byte(member))
+			}
+			emit(cmd)
+		}
+		emitExpiry(emit, key, e.expireAt)
+	case *zsetValue:
+		members := v.list.all()
+		for start := 0; start < len(members); start += snapshotChunk {
+			end := min(start+snapshotChunk, len(members))
+			cmd := [][]byte{[]byte("ZADD"), []byte(key)}
+			for _, member := range members[start:end] {
+				cmd = append(cmd, []byte(FormatScore(member.Score)), []byte(member.Member))
+			}
+			emit(cmd)
+		}
+		emitExpiry(emit, key, e.expireAt)
 	}
 }
 
@@ -789,10 +923,6 @@ func emitExpiry(emit func(args [][]byte), key string, expireAt int64) {
 		[]byte(key),
 		[]byte(strconv.FormatInt(expireAt, 10)),
 	})
-}
-
-func isExpired(e *entry, now int64) bool {
-	return e.expireAt != 0 && e.expireAt <= now
 }
 
 func clone(b []byte) []byte {

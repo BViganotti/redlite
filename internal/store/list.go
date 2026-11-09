@@ -12,14 +12,14 @@ var (
 )
 
 // listLocked returns the list at key, creating it when create is true.
-func (s *Store) listLocked(key string, now int64, create bool) (*listValue, error) {
-	e, ok := s.lookupWrite(key, now)
+func (s *Store) listLocked(sh *shard, key string, now int64, create bool) (*listValue, error) {
+	e, ok := s.lookupWrite(sh, key, now)
 	if !ok {
 		if !create {
 			return nil, nil
 		}
 		lv := newListValue()
-		s.data[key] = &entry{value: lv}
+		sh.data[key] = s.newEntry(lv, 0)
 		s.sets.Add(1)
 		return lv, nil
 	}
@@ -52,10 +52,10 @@ func (s *Store) RPushX(key string, values [][]byte) (int64, error) {
 
 func (s *Store) push(key string, values [][]byte, front, create bool) (int64, error) {
 	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.lockWrite(key)
+	defer s.unlockWrite(sh)
 
-	lv, err := s.listLocked(key, now, create)
+	lv, err := s.listLocked(sh, key, now, create)
 	if err != nil {
 		return 0, err
 	}
@@ -69,7 +69,7 @@ func (s *Store) push(key string, values [][]byte, front, create bool) (int64, er
 			lv.pushBack(clone(value))
 		}
 	}
-	s.stampKey(key)
+	s.touch(sh.data[key])
 	s.waiters.signal(key)
 	return int64(lv.len()), nil
 }
@@ -87,10 +87,10 @@ func (s *Store) RPop(key string, count int) ([][]byte, error) {
 
 func (s *Store) pop(key string, count int, front bool) ([][]byte, error) {
 	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.lockWrite(key)
+	defer s.unlockWrite(sh)
 
-	lv, err := s.listLocked(key, now, false)
+	lv, err := s.listLocked(sh, key, now, false)
 	if err != nil {
 		return nil, err
 	}
@@ -119,9 +119,9 @@ func (s *Store) pop(key string, count int, front bool) ([][]byte, error) {
 		out = append(out, value)
 	}
 	if lv.len() == 0 {
-		delete(s.data, key)
+		delete(sh.data, key)
 	} else if len(out) > 0 {
-		s.stampKey(key)
+		s.touch(sh.data[key])
 	}
 	return out, nil
 }
@@ -129,10 +129,10 @@ func (s *Store) pop(key string, count int, front bool) ([][]byte, error) {
 // LLen returns the list length.
 func (s *Store) LLen(key string) (int64, error) {
 	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	sh := s.lockRead(key)
+	defer s.unlockRead(sh)
 
-	e, ok := s.lookupRead(key, now)
+	e, ok := s.lookupRead(sh, key, now)
 	if !ok {
 		return 0, nil
 	}
@@ -146,10 +146,10 @@ func (s *Store) LLen(key string) (int64, error) {
 // LIndex returns one element, or false when the index is out of range.
 func (s *Store) LIndex(key string, index int64) ([]byte, bool, error) {
 	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	sh := s.lockRead(key)
+	defer s.unlockRead(sh)
 
-	e, ok := s.lookupRead(key, now)
+	e, ok := s.lookupRead(sh, key, now)
 	if !ok {
 		return nil, false, nil
 	}
@@ -167,10 +167,10 @@ func (s *Store) LIndex(key string, index int64) ([]byte, bool, error) {
 // LSet replaces one element.
 func (s *Store) LSet(key string, index int64, value []byte) error {
 	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.lockWrite(key)
+	defer s.unlockWrite(sh)
 
-	lv, err := s.listLocked(key, now, false)
+	lv, err := s.listLocked(sh, key, now, false)
 	if err != nil {
 		return err
 	}
@@ -182,17 +182,17 @@ func (s *Store) LSet(key string, index int64, value []byte) error {
 		return ErrIndexOutOfRange
 	}
 	lv.set(pos, clone(value))
-	s.stampKey(key)
+	s.touch(sh.data[key])
 	return nil
 }
 
 // LRange returns the inclusive range, clamped to the list.
 func (s *Store) LRange(key string, start, stop int64) ([][]byte, error) {
 	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	sh := s.lockRead(key)
+	defer s.unlockRead(sh)
 
-	e, ok := s.lookupRead(key, now)
+	e, ok := s.lookupRead(sh, key, now)
 	if !ok {
 		return nil, nil
 	}
@@ -214,10 +214,10 @@ func (s *Store) LRange(key string, start, stop int64) ([][]byte, error) {
 // LTrim keeps only the inclusive range, deleting the key when nothing remains.
 func (s *Store) LTrim(key string, start, stop int64) error {
 	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.lockWrite(key)
+	defer s.unlockWrite(sh)
 
-	lv, err := s.listLocked(key, now, false)
+	lv, err := s.listLocked(sh, key, now, false)
 	if err != nil {
 		return err
 	}
@@ -226,7 +226,7 @@ func (s *Store) LTrim(key string, start, stop int64) error {
 	}
 	from, to, ok := normalizeRange(start, stop, lv.len())
 	if !ok {
-		delete(s.data, key)
+		delete(sh.data, key)
 		return nil
 	}
 	items := make([][]byte, 0, to-from+1)
@@ -234,7 +234,7 @@ func (s *Store) LTrim(key string, start, stop int64) error {
 		items = append(items, lv.at(i))
 	}
 	lv.reset(items)
-	s.stampKey(key)
+	s.touch(sh.data[key])
 	return nil
 }
 
@@ -242,10 +242,10 @@ func (s *Store) LTrim(key string, start, stop int64) error {
 // negative count at the tail, and zero removes every occurrence.
 func (s *Store) LRem(key string, count int64, value []byte) (int64, error) {
 	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.lockWrite(key)
+	defer s.unlockWrite(sh)
 
-	lv, err := s.listLocked(key, now, false)
+	lv, err := s.listLocked(sh, key, now, false)
 	if err != nil {
 		return 0, err
 	}
@@ -296,22 +296,23 @@ func (s *Store) LRem(key string, count int64, value []byte) (int64, error) {
 		}
 	}
 	if len(kept) == 0 {
-		delete(s.data, key)
+		delete(sh.data, key)
 		return removed, nil
 	}
 	lv.reset(kept)
-	s.stampKey(key)
+	s.touch(sh.data[key])
 	return removed, nil
 }
 
 // Move pops one element from source and pushes it to destination in a single
 // locked step. It reports false when the source is empty.
 func (s *Store) Move(source, destination string, fromLeft, toLeft bool) ([]byte, bool, error) {
-	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	locked := s.lockKeys([]string{source, destination})
+	defer s.unlockKeys(locked)
 
-	src, err := s.listLocked(source, now, false)
+	now := s.now()
+	srcShard := s.shardFor(source)
+	src, err := s.listLocked(srcShard, source, now, false)
 	if err != nil {
 		return nil, false, err
 	}
@@ -331,13 +332,14 @@ func (s *Store) Move(source, destination string, fromLeft, toLeft bool) ([]byte,
 		} else {
 			src.pushBack(value)
 		}
-		s.stampKey(source)
+		s.touch(srcShard.data[source])
 		s.waiters.signal(source)
 		return value, true, nil
 	}
 
 	// Validate the destination type before mutating anything.
-	dst, err := s.listLocked(destination, now, false)
+	dstShard := s.shardFor(destination)
+	dst, err := s.listLocked(dstShard, destination, now, false)
 	if err != nil {
 		return nil, false, err
 	}
@@ -349,14 +351,14 @@ func (s *Store) Move(source, destination string, fromLeft, toLeft bool) ([]byte,
 		value, _ = src.popBack()
 	}
 	if src.len() == 0 {
-		delete(s.data, source)
+		delete(srcShard.data, source)
 	} else {
-		s.stampKey(source)
+		s.touch(srcShard.data[source])
 	}
 
 	if dst == nil {
 		dst = newListValue()
-		s.data[destination] = &entry{value: dst}
+		dstShard.data[destination] = s.newEntry(dst, 0)
 		s.sets.Add(1)
 	}
 	if toLeft {
@@ -364,7 +366,7 @@ func (s *Store) Move(source, destination string, fromLeft, toLeft bool) ([]byte,
 	} else {
 		dst.pushBack(value)
 	}
-	s.stampKey(destination)
+	s.touch(dstShard.data[destination])
 	s.waiters.signal(destination)
 	return value, true, nil
 }

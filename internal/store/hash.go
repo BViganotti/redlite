@@ -13,14 +13,14 @@ type FieldValue struct {
 
 // hashLocked returns the hash at key, creating it when create is true. A nil
 // hash with a nil error means the key does not exist.
-func (s *Store) hashLocked(key string, now int64, create bool) (*hashValue, error) {
-	e, ok := s.lookupWrite(key, now)
+func (s *Store) hashLocked(sh *shard, key string, now int64, create bool) (*hashValue, error) {
+	e, ok := s.lookupWrite(sh, key, now)
 	if !ok {
 		if !create {
 			return nil, nil
 		}
 		hv := &hashValue{fields: make(map[string][]byte)}
-		s.data[key] = &entry{value: hv}
+		sh.data[key] = s.newEntry(hv, 0)
 		s.sets.Add(1)
 		return hv, nil
 	}
@@ -34,22 +34,32 @@ func (s *Store) hashLocked(key string, now int64, create bool) (*hashValue, erro
 // HSet sets one or more fields and reports how many were new.
 func (s *Store) HSet(key string, pairs []KeyValue) (int64, error) {
 	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.lockWrite(key)
+	defer s.unlockWrite(sh)
 
-	hv, err := s.hashLocked(key, now, true)
-	if err != nil {
-		return 0, err
+	e, exists := s.lookupWrite(sh, key, now)
+	var hv *hashValue
+	if exists {
+		current, ok := e.value.(*hashValue)
+		if !ok {
+			return 0, ErrWrongType
+		}
+		hv = current
+	} else {
+		hv = &hashValue{fields: make(map[string][]byte)}
+		sh.data[key] = s.newEntry(hv, 0)
+		s.sets.Add(1)
 	}
+
 	var added int64
 	for _, pair := range pairs {
-		if _, exists := hv.fields[pair.Key]; !exists {
+		if _, ok := hv.fields[pair.Key]; !ok {
 			added++
 		}
 		hv.fields[pair.Key] = clone(pair.Value)
 	}
 	if len(pairs) > 0 {
-		s.stampKey(key)
+		s.touch(sh.data[key])
 	}
 	return added, nil
 }
@@ -57,10 +67,10 @@ func (s *Store) HSet(key string, pairs []KeyValue) (int64, error) {
 // HSetNX sets a field only when it does not exist.
 func (s *Store) HSetNX(key, field string, value []byte) (bool, error) {
 	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.lockWrite(key)
+	defer s.unlockWrite(sh)
 
-	hv, err := s.hashLocked(key, now, true)
+	hv, err := s.hashLocked(sh, key, now, true)
 	if err != nil {
 		return false, err
 	}
@@ -68,17 +78,17 @@ func (s *Store) HSetNX(key, field string, value []byte) (bool, error) {
 		return false, nil
 	}
 	hv.fields[field] = clone(value)
-	s.stampKey(key)
+	s.touch(sh.data[key])
 	return true, nil
 }
 
 // HGet returns a copy of one field.
 func (s *Store) HGet(key, field string) ([]byte, bool, error) {
 	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	sh := s.lockRead(key)
+	defer s.unlockRead(sh)
 
-	e, ok := s.lookupRead(key, now)
+	e, ok := s.lookupRead(sh, key, now)
 	if !ok {
 		return nil, false, nil
 	}
@@ -96,10 +106,10 @@ func (s *Store) HGet(key, field string) ([]byte, bool, error) {
 // HDel removes fields and reports how many existed.
 func (s *Store) HDel(key string, fields []string) (int64, error) {
 	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.lockWrite(key)
+	defer s.unlockWrite(sh)
 
-	hv, err := s.hashLocked(key, now, false)
+	hv, err := s.hashLocked(sh, key, now, false)
 	if err != nil {
 		return 0, err
 	}
@@ -115,9 +125,9 @@ func (s *Store) HDel(key string, fields []string) (int64, error) {
 		}
 	}
 	if len(hv.fields) == 0 {
-		delete(s.data, key)
+		delete(sh.data, key)
 	} else if removed > 0 {
-		s.stampKey(key)
+		s.touch(sh.data[key])
 	}
 	return removed, nil
 }
@@ -125,10 +135,10 @@ func (s *Store) HDel(key string, fields []string) (int64, error) {
 // HLen returns the number of fields.
 func (s *Store) HLen(key string) (int64, error) {
 	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	sh := s.lockRead(key)
+	defer s.unlockRead(sh)
 
-	e, ok := s.lookupRead(key, now)
+	e, ok := s.lookupRead(sh, key, now)
 	if !ok {
 		return 0, nil
 	}
@@ -142,10 +152,10 @@ func (s *Store) HLen(key string) (int64, error) {
 // HExists reports whether a field is present.
 func (s *Store) HExists(key, field string) (bool, error) {
 	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	sh := s.lockRead(key)
+	defer s.unlockRead(sh)
 
-	e, ok := s.lookupRead(key, now)
+	e, ok := s.lookupRead(sh, key, now)
 	if !ok {
 		return false, nil
 	}
@@ -160,10 +170,10 @@ func (s *Store) HExists(key, field string) (bool, error) {
 // HGetAll returns every field, sorted by name so replies are deterministic.
 func (s *Store) HGetAll(key string) ([]FieldValue, error) {
 	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	sh := s.lockRead(key)
+	defer s.unlockRead(sh)
 
-	e, ok := s.lookupRead(key, now)
+	e, ok := s.lookupRead(sh, key, now)
 	if !ok {
 		return nil, nil
 	}
@@ -177,10 +187,10 @@ func (s *Store) HGetAll(key string) ([]FieldValue, error) {
 // HKeys returns every field name, sorted.
 func (s *Store) HKeys(key string) ([]string, error) {
 	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	sh := s.lockRead(key)
+	defer s.unlockRead(sh)
 
-	e, ok := s.lookupRead(key, now)
+	e, ok := s.lookupRead(sh, key, now)
 	if !ok {
 		return nil, nil
 	}
@@ -194,10 +204,10 @@ func (s *Store) HKeys(key string) ([]string, error) {
 // HVals returns every field value, ordered by field name.
 func (s *Store) HVals(key string) ([][]byte, error) {
 	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	sh := s.lockRead(key)
+	defer s.unlockRead(sh)
 
-	e, ok := s.lookupRead(key, now)
+	e, ok := s.lookupRead(sh, key, now)
 	if !ok {
 		return nil, nil
 	}
@@ -216,10 +226,10 @@ func (s *Store) HVals(key string) ([][]byte, error) {
 // HIncrBy adds delta to an integer field, initializing missing fields to zero.
 func (s *Store) HIncrBy(key, field string, delta int64) (int64, error) {
 	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.lockWrite(key)
+	defer s.unlockWrite(sh)
 
-	hv, err := s.hashLocked(key, now, true)
+	hv, err := s.hashLocked(sh, key, now, true)
 	if err != nil {
 		return 0, err
 	}
@@ -238,7 +248,7 @@ func (s *Store) HIncrBy(key, field string, delta int64) (int64, error) {
 
 	next := current + delta
 	hv.fields[field] = strconv.AppendInt(nil, next, 10)
-	s.stampKey(key)
+	s.touch(sh.data[key])
 	return next, nil
 }
 
@@ -249,10 +259,10 @@ func (s *Store) HScan(key string, cursor uint64, pattern string, count int) (uin
 		count = 10
 	}
 	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	sh := s.lockRead(key)
+	defer s.unlockRead(sh)
 
-	e, ok := s.lookupRead(key, now)
+	e, ok := s.lookupRead(sh, key, now)
 	if !ok {
 		return 0, nil, nil
 	}

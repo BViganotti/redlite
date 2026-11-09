@@ -78,36 +78,39 @@ func (s *Store) Save(w io.Writer) error {
 }
 
 func (s *Store) snapshotEntries() []snapshotEntry {
+	locked := s.lockAllShards()
+	defer s.unlockAllShards(locked)
+
 	now := s.now()
-	s.mu.RLock()
-	entries := make([]snapshotEntry, 0, len(s.data))
-	for key, e := range s.data {
-		if isExpired(e, now) {
-			continue
-		}
-		snap := snapshotEntry{key: key, kind: e.value.kind(), expireAt: e.expireAt}
-		switch v := e.value.(type) {
-		case *stringValue:
-			snap.str = clone(v.data)
-		case *hashValue:
-			snap.hash = make(map[string][]byte, len(v.fields))
-			for field, value := range v.fields {
-				snap.hash[field] = clone(value)
+	entries := make([]snapshotEntry, 0, 32)
+	for _, sh := range s.shards {
+		for key, e := range sh.data {
+			if isExpired(e, now) {
+				continue
 			}
-		case *listValue:
-			items := v.toSlice()
-			snap.list = make([][]byte, len(items))
-			for i, item := range items {
-				snap.list[i] = clone(item)
+			snap := snapshotEntry{key: key, kind: e.value.kind(), expireAt: e.expireAt}
+			switch v := e.value.(type) {
+			case *stringValue:
+				snap.str = clone(v.data)
+			case *hashValue:
+				snap.hash = make(map[string][]byte, len(v.fields))
+				for field, value := range v.fields {
+					snap.hash[field] = clone(value)
+				}
+			case *listValue:
+				items := v.toSlice()
+				snap.list = make([][]byte, len(items))
+				for i, item := range items {
+					snap.list[i] = clone(item)
+				}
+			case *setValue:
+				snap.set = sortedSetKeys(v.members)
+			case *zsetValue:
+				snap.zset = v.list.all()
 			}
-		case *setValue:
-			snap.set = sortedSetKeys(v.members)
-		case *zsetValue:
-			snap.zset = v.list.all()
+			entries = append(entries, snap)
 		}
-		entries = append(entries, snap)
 	}
-	s.mu.RUnlock()
 
 	sort.Slice(entries, func(i, j int) bool { return entries[i].key < entries[j].key })
 	return entries
@@ -239,10 +242,16 @@ func (s *Store) Load(r io.Reader) error {
 		return ErrSnapshotCorrupt
 	}
 
-	s.mu.Lock()
-	s.data = parsed
+	locked := s.lockAllShards()
+	defer s.unlockAllShards(locked)
+	for _, sh := range s.shards {
+		sh.data = make(map[string]*entry)
+	}
+	for key, entry := range parsed {
+		entry.version = s.nextVersion.Add(1)
+		s.shardFor(key).data[key] = entry
+	}
 	s.epoch.Add(1)
-	s.mu.Unlock()
 	return nil
 }
 

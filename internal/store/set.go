@@ -6,14 +6,14 @@ import (
 )
 
 // setLocked returns the set at key, creating it when create is true.
-func (s *Store) setLocked(key string, now int64, create bool) (*setValue, error) {
-	e, ok := s.lookupWrite(key, now)
+func (s *Store) setLocked(sh *shard, key string, now int64, create bool) (*setValue, error) {
+	e, ok := s.lookupWrite(sh, key, now)
 	if !ok {
 		if !create {
 			return nil, nil
 		}
 		sv := &setValue{members: make(map[string]struct{})}
-		s.data[key] = &entry{value: sv}
+		sh.data[key] = s.newEntry(sv, 0)
 		s.sets.Add(1)
 		return sv, nil
 	}
@@ -27,10 +27,10 @@ func (s *Store) setLocked(key string, now int64, create bool) (*setValue, error)
 // SAdd adds members and reports how many were new.
 func (s *Store) SAdd(key string, members [][]byte) (int64, error) {
 	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.lockWrite(key)
+	defer s.unlockWrite(sh)
 
-	sv, err := s.setLocked(key, now, true)
+	sv, err := s.setLocked(sh, key, now, true)
 	if err != nil {
 		return 0, err
 	}
@@ -42,7 +42,7 @@ func (s *Store) SAdd(key string, members [][]byte) (int64, error) {
 		sv.members[string(member)] = struct{}{}
 	}
 	if added > 0 {
-		s.stampKey(key)
+		s.touch(sh.data[key])
 	}
 	return added, nil
 }
@@ -50,10 +50,10 @@ func (s *Store) SAdd(key string, members [][]byte) (int64, error) {
 // SRem removes members and reports how many existed.
 func (s *Store) SRem(key string, members [][]byte) (int64, error) {
 	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.lockWrite(key)
+	defer s.unlockWrite(sh)
 
-	sv, err := s.setLocked(key, now, false)
+	sv, err := s.setLocked(sh, key, now, false)
 	if err != nil {
 		return 0, err
 	}
@@ -68,9 +68,9 @@ func (s *Store) SRem(key string, members [][]byte) (int64, error) {
 		}
 	}
 	if len(sv.members) == 0 {
-		delete(s.data, key)
+		delete(sh.data, key)
 	} else if removed > 0 {
-		s.stampKey(key)
+		s.touch(sh.data[key])
 	}
 	return removed, nil
 }
@@ -78,10 +78,10 @@ func (s *Store) SRem(key string, members [][]byte) (int64, error) {
 // SCard returns the cardinality.
 func (s *Store) SCard(key string) (int64, error) {
 	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	sh := s.lockRead(key)
+	defer s.unlockRead(sh)
 
-	e, ok := s.lookupRead(key, now)
+	e, ok := s.lookupRead(sh, key, now)
 	if !ok {
 		return 0, nil
 	}
@@ -95,10 +95,10 @@ func (s *Store) SCard(key string) (int64, error) {
 // SIsMember reports membership.
 func (s *Store) SIsMember(key string, member []byte) (bool, error) {
 	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	sh := s.lockRead(key)
+	defer s.unlockRead(sh)
 
-	e, ok := s.lookupRead(key, now)
+	e, ok := s.lookupRead(sh, key, now)
 	if !ok {
 		return false, nil
 	}
@@ -113,10 +113,10 @@ func (s *Store) SIsMember(key string, member []byte) (bool, error) {
 // SMembers returns every member, sorted so replies are deterministic.
 func (s *Store) SMembers(key string) ([][]byte, error) {
 	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	sh := s.lockRead(key)
+	defer s.unlockRead(sh)
 
-	e, ok := s.lookupRead(key, now)
+	e, ok := s.lookupRead(sh, key, now)
 	if !ok {
 		return nil, nil
 	}
@@ -143,13 +143,14 @@ func (s *Store) SDiff(keys []string) ([][]byte, error) {
 }
 
 func (s *Store) setAlgebra(keys []string, op func([]map[string]struct{}) map[string]struct{}) ([][]byte, error) {
-	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	locked := s.lockKeys(keys)
+	defer s.unlockKeys(locked)
 
+	now := s.now()
 	sets := make([]map[string]struct{}, 0, len(keys))
 	for _, key := range keys {
-		e, ok := s.lookupRead(key, now)
+		sh := s.shardFor(key)
+		e, ok := s.lookupRead(sh, key, now)
 		if !ok {
 			sets = append(sets, nil)
 			continue
@@ -219,10 +220,10 @@ func difference(sets []map[string]struct{}) map[string]struct{} {
 // SPop removes and returns up to count random members.
 func (s *Store) SPop(key string, count int) ([][]byte, error) {
 	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.lockWrite(key)
+	defer s.unlockWrite(sh)
 
-	sv, err := s.setLocked(key, now, false)
+	sv, err := s.setLocked(sh, key, now, false)
 	if err != nil {
 		return nil, err
 	}
@@ -241,9 +242,9 @@ func (s *Store) SPop(key string, count int) ([][]byte, error) {
 		out = append(out, []byte(member))
 	}
 	if len(sv.members) == 0 {
-		delete(s.data, key)
+		delete(sh.data, key)
 	} else if len(out) > 0 {
-		s.stampKey(key)
+		s.touch(sh.data[key])
 	}
 	return out, nil
 }
@@ -252,10 +253,10 @@ func (s *Store) SPop(key string, count int) ([][]byte, error) {
 // allows repeated members.
 func (s *Store) SRandMember(key string, count int) ([][]byte, error) {
 	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	sh := s.lockRead(key)
+	defer s.unlockRead(sh)
 
-	e, ok := s.lookupRead(key, now)
+	e, ok := s.lookupRead(sh, key, now)
 	if !ok {
 		return nil, nil
 	}
@@ -298,10 +299,10 @@ func (s *Store) SScan(key string, cursor uint64, pattern string, count int) (uin
 		count = 10
 	}
 	now := s.now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	sh := s.lockRead(key)
+	defer s.unlockRead(sh)
 
-	e, ok := s.lookupRead(key, now)
+	e, ok := s.lookupRead(sh, key, now)
 	if !ok {
 		return 0, nil, nil
 	}
