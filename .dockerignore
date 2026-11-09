@@ -1,0 +1,7 @@
+.git
+.github
+bin
+data
+*.aof
+*.rdb
+.DS_Store

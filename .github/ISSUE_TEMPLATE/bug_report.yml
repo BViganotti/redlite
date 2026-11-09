@@ -1,0 +1,43 @@
+name: Bug report
+description: Something behaved differently from Redis, or redlite crashed.
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please include a minimal reproduction. "It does not work" cannot be debugged.
+  - type: input
+    id: version
+    attributes:
+      label: redlite version
+      description: Output of `./bin/redlite --version`.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The exact commands, in order.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected reply
+      description: What Redis returns for the same commands, if you checked.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual reply
+      description: What redlite returned.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, architecture, how you ran it (binary, Docker, source).

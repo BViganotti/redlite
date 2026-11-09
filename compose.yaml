@@ -1,0 +1,18 @@
+services:
+  redlite:
+    build: .
+    ports:
+      - "6379:6379"
+    command:
+      - "--bind"
+      - "0.0.0.0"
+      - "--appendonly"
+      - "--appendfsync"
+      - "everysec"
+      - "--dir"
+      - "/data"
+    volumes:
+      - redlite-data:/data
+
+volumes:
+  redlite-data:

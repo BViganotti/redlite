@@ -1,0 +1,23 @@
+# Build artifacts
+/bin/
+/dist/
+*.test
+*.out
+redlite
+
+# Local data
+/data/
+*.aof
+*.rdb
+dump.rdb
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local environment
+.env
+.env.*
+!.env.example
