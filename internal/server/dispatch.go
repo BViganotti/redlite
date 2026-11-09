@@ -135,6 +135,7 @@ const (
 	flagReadOnly
 	flagAdmin
 	flagFast
+	flagBlocking
 )
 
 func (f cmdFlag) names() []any {
@@ -150,6 +151,9 @@ func (f cmdFlag) names() []any {
 	}
 	if f&flagFast != 0 {
 		out = append(out, bulkReply("fast"))
+	}
+	if f&flagBlocking != 0 {
+		out = append(out, bulkReply("blocking"))
 	}
 	return out
 }
@@ -199,6 +203,12 @@ func (s *Server) execute(c *client, args [][]byte) (result, error) {
 
 	if c.multi && name != "EXEC" && name != "DISCARD" && name != "MULTI" && name != "WATCH" && name != "QUIT" {
 		return s.queueCommand(c, args)
+	}
+
+	// Blocking commands take the transaction gate per attempt, not while
+	// waiting, so a blocked client never holds up another client's EXEC.
+	if cmd, ok := lookupCommand(name); ok && cmd.flags&flagBlocking != 0 {
+		return s.executeLocked(c, args, true)
 	}
 
 	if name == "EXEC" {

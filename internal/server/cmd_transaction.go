@@ -71,6 +71,8 @@ func cmdExec(c *client, args [][]byte) (result, error) {
 	c.dirty = false
 	c.queued = nil
 	c.watched = nil
+	c.executing = true
+	defer func() { c.executing = false }()
 
 	aof := c.srv.aof
 	writeAOF := aof != nil && !c.srv.replaying.Load()

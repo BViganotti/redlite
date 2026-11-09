@@ -31,10 +31,11 @@ type client struct {
 	cname   string
 	lastCmd string
 
-	multi   bool
-	dirty   bool
-	queued  [][][]byte
-	watched map[string]store.WatchState
+	multi     bool
+	dirty     bool
+	queued    [][][]byte
+	watched   map[string]store.WatchState
+	executing bool
 
 	writeMu sync.Mutex
 	subs    map[string]struct{}
@@ -135,6 +136,16 @@ func (c *client) sendReply(value any) error {
 		return err
 	}
 	return c.wr.Flush()
+}
+
+// enterReadGate takes the transaction read gate unless the caller is already
+// inside EXEC, which holds the write side of the same gate.
+func (c *client) enterReadGate() func() {
+	if c.executing {
+		return func() {}
+	}
+	c.srv.txMu.RLock()
+	return c.srv.txMu.RUnlock
 }
 
 // push writes an out-of-band message to a subscriber.

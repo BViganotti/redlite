@@ -70,6 +70,7 @@ func (s *Store) push(key string, values [][]byte, front, create bool) (int64, er
 		}
 	}
 	s.stampKey(key)
+	s.waiters.signal(key)
 	return int64(lv.len()), nil
 }
 
@@ -301,6 +302,71 @@ func (s *Store) LRem(key string, count int64, value []byte) (int64, error) {
 	lv.reset(kept)
 	s.stampKey(key)
 	return removed, nil
+}
+
+// Move pops one element from source and pushes it to destination in a single
+// locked step. It reports false when the source is empty.
+func (s *Store) Move(source, destination string, fromLeft, toLeft bool) ([]byte, bool, error) {
+	now := s.now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	src, err := s.listLocked(source, now, false)
+	if err != nil {
+		return nil, false, err
+	}
+	if src == nil || src.len() == 0 {
+		return nil, false, nil
+	}
+
+	if source == destination {
+		var value []byte
+		if fromLeft {
+			value, _ = src.popFront()
+		} else {
+			value, _ = src.popBack()
+		}
+		if toLeft {
+			src.pushFront(value)
+		} else {
+			src.pushBack(value)
+		}
+		s.stampKey(source)
+		s.waiters.signal(source)
+		return value, true, nil
+	}
+
+	// Validate the destination type before mutating anything.
+	dst, err := s.listLocked(destination, now, false)
+	if err != nil {
+		return nil, false, err
+	}
+
+	var value []byte
+	if fromLeft {
+		value, _ = src.popFront()
+	} else {
+		value, _ = src.popBack()
+	}
+	if src.len() == 0 {
+		delete(s.data, source)
+	} else {
+		s.stampKey(source)
+	}
+
+	if dst == nil {
+		dst = newListValue()
+		s.data[destination] = &entry{value: dst}
+		s.sets.Add(1)
+	}
+	if toLeft {
+		dst.pushFront(value)
+	} else {
+		dst.pushBack(value)
+	}
+	s.stampKey(destination)
+	s.waiters.signal(destination)
+	return value, true, nil
 }
 
 func normalizeIndex(index int64, length int) (int, bool) {

@@ -55,6 +55,8 @@ type Store struct {
 	nextVersion atomic.Uint64
 	epoch       atomic.Uint64
 
+	waiters *waiterSet
+
 	now      func() int64
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -71,9 +73,10 @@ func NewWithClock(now func() int64) *Store {
 		now = func() int64 { return time.Now().UnixMilli() }
 	}
 	return &Store{
-		data: make(map[string]*entry),
-		now:  now,
-		stop: make(chan struct{}),
+		data:    make(map[string]*entry),
+		now:     now,
+		stop:    make(chan struct{}),
+		waiters: newWaiterSet(),
 	}
 }
 

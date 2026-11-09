@@ -290,6 +290,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		}
 		s.clientsMu.RUnlock()
 
+		// Wake clients blocked in BLPOP/BRPOP/BLMOVE so shutdown cannot hang.
+		s.data.WakeAll()
+
 		done := make(chan struct{})
 		go func() {
 			s.wg.Wait()
