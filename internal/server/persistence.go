@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"strings"
@@ -36,24 +37,32 @@ func cmdBGSave(c *client, args [][]byte) (result, error) {
 // whether a snapshot is authoritative (it is not when the AOF is enabled).
 func (s *Server) loadSnapshot() error {
 	path := s.cfg.SnapshotPath()
-	file, err := os.Open(path)
-	switch {
-	case err == nil:
-		loadErr := s.data.Load(file)
-		closeErr := file.Close()
-		if loadErr != nil {
-			return fmt.Errorf("load snapshot %s: %w", path, loadErr)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
 		}
-		if closeErr != nil {
-			return closeErr
-		}
-		s.logger.Info("snapshot loaded", "path", path)
-		return nil
-	case os.IsNotExist(err):
-		return nil
-	default:
 		return fmt.Errorf("open snapshot %s: %w", path, err)
 	}
+
+	var loadErr error
+	if len(data) >= 5 && string(data[:5]) == "REDIS" {
+		loadErr = s.data.LoadRDB(bytes.NewReader(data))
+	} else {
+		loadErr = s.data.Load(bytes.NewReader(data))
+	}
+	if loadErr != nil {
+		return fmt.Errorf("load snapshot %s: %w", path, loadErr)
+	}
+	s.logger.Info("snapshot loaded", "path", path, "format", snapshotFormat(data))
+	return nil
+}
+
+func snapshotFormat(data []byte) string {
+	if len(data) >= 5 && string(data[:5]) == "REDIS" {
+		return "rdb"
+	}
+	return "redlite"
 }
 
 // saveSnapshot writes the keyspace atomically: a temporary file is fsynced and
@@ -66,7 +75,7 @@ func (s *Server) saveSnapshot() error {
 	name := temp.Name()
 	defer func() { _ = os.Remove(name) }()
 
-	if err := s.data.Save(temp); err != nil {
+	if err := s.data.SaveRDB(temp); err != nil {
 		_ = temp.Close()
 		return err
 	}
