@@ -141,11 +141,11 @@ func (s *Server) execute(c *client, args [][]byte) (result, error) {
 	name := strings.ToUpper(string(args[0]))
 	cmd, ok := lookupCommand(name)
 	if !ok {
-		message := fmt.Sprintf("ERR unknown command '%s'", printable(args[0]))
-		if len(args) > 1 {
-			message += fmt.Sprintf(", with args beginning with: %s", previewArgs(args[1:]))
-		}
-		return result{}, errors.New(message)
+		// Redis 7 always appends the suffix, even when there are no arguments.
+		// Redis 8 drops it for a bare command; redlite reports 7.0.0 in INFO,
+		// so it matches the 7.x format.
+		return result{}, fmt.Errorf("ERR unknown command '%s', with args beginning with: %s",
+			printable(args[0]), previewArgs(args[1:]))
 	}
 	if !arityOK(cmd.arity, len(args)) {
 		return result{}, fmt.Errorf("ERR wrong number of arguments for '%s' command", strings.ToLower(name))
@@ -225,6 +225,10 @@ func previewArgs(args [][]byte) string {
 		b.WriteByte('\'')
 		b.WriteString(printable(arg))
 		b.WriteByte('\'')
+	}
+	// Redis' formatter leaves a space after the final quoted argument.
+	if b.Len() > 0 {
+		b.WriteByte(' ')
 	}
 	return b.String()
 }

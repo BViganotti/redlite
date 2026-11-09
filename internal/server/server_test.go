@@ -425,6 +425,28 @@ func TestHelloRESP3(t *testing.T) {
 	expectNull(t, c.do("GET", "missing"))
 }
 
+func TestUnknownCommandMessage(t *testing.T) {
+	c := dial(t, newTestServer(t, nil))
+
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"NOTACOMMAND"}, "ERR unknown command 'NOTACOMMAND', with args beginning with: "},
+		{[]string{"NOTACOMMAND", "abc"}, "ERR unknown command 'NOTACOMMAND', with args beginning with: 'abc' "},
+		{[]string{"NOTACOMMAND", "a", "b"}, "ERR unknown command 'NOTACOMMAND', with args beginning with: 'a' 'b' "},
+	} {
+		got := c.do(tc.args...)
+		errValue, ok := got.(testError)
+		if !ok {
+			t.Fatalf("%v: got %T, want an error", tc.args, got)
+		}
+		if string(errValue) != tc.want {
+			t.Errorf("%v: got %q, want %q", tc.args, errValue, tc.want)
+		}
+	}
+}
+
 func TestInlineCommand(t *testing.T) {
 	c := dial(t, newTestServer(t, nil))
 

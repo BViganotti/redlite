@@ -151,7 +151,7 @@ check raw SCARD st
 check raw HSET h odd
 check raw LPUSH
 check raw GET
-check raw NOTACOMMAND
+check raw NOTACOMMAND somearg
 check raw SET x v EX 0
 check raw EXPIRE missing 10
 
