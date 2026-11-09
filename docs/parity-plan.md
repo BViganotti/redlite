@@ -72,7 +72,7 @@ Effort: S (≤2 days), M (≤1 week), L (2–4 weeks), XL (1–3 months).
 ### 3.1 Protocol and connection
 
 - [ ] RESP3 attributes (`|`), big numbers (`(`), verbatim strings (`=`), doubles
-      (`,”), booleans in every reply where Redis uses them (M)
+      (`,`), booleans in every reply where Redis uses them (M)
 - [ ] Exact `HELLO` fields, including `modules` and proto negotiation errors (S)
 - [ ] `CLIENT REPLY OFF|ON|SKIP` (M)
 - [ ] `RESET` full semantics: protocol, auth, tracking state (S)
