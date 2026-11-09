@@ -1,6 +1,10 @@
 // Package store implements the in-memory keyspace, expiration, and the
 // append-only file.
 //
+// Every value carries an explicit type. Commands that touch a key with the
+// wrong type return ErrWrongType instead of guessing, and the type is what TYPE
+// and the append-only-file rewriter act on.
+//
 // The keyspace is protected by a single reader-writer mutex. That is the
 // simplest thing that is correct; sharding is tracked in ROADMAP.md as a
 // performance task rather than a correctness one.
@@ -21,10 +25,11 @@ import (
 var (
 	ErrNotInteger = errors.New("value is not an integer or out of range")
 	ErrOverflow   = errors.New("increment or decrement would overflow")
+	ErrWrongType  = errors.New("WRONGTYPE Operation against a key holding the wrong kind of value")
 )
 
 type entry struct {
-	value    []byte
+	value    value
 	expireAt int64 // unix milliseconds; 0 means no expiry
 }
 
@@ -106,7 +111,7 @@ func (s *Store) expireSample(limit int) {
 			return
 		}
 		seen++
-		if e.expireAt != 0 && e.expireAt <= now {
+		if isExpired(e, now) {
 			delete(s.data, key)
 			s.expired.Add(1)
 		}
@@ -131,20 +136,49 @@ func (s *Store) ResetStats() {
 	s.sets.Store(0)
 }
 
-// Get returns a copy of the value stored at key.
-func (s *Store) Get(key string) ([]byte, bool) {
-	now := s.now()
-	s.mu.RLock()
+// lookupRead returns a live entry. The caller must hold at least a read lock.
+// Expired entries are reported as missing but not deleted, because deletion
+// requires the write lock.
+func (s *Store) lookupRead(key string, now int64) (*entry, bool) {
 	e, ok := s.data[key]
 	if !ok || isExpired(e, now) {
-		s.mu.RUnlock()
-		s.misses.Add(1)
 		return nil, false
 	}
-	value := clone(e.value)
-	s.mu.RUnlock()
+	return e, true
+}
+
+// lookupWrite returns a live entry and removes it if it has expired. The caller
+// must hold the write lock.
+func (s *Store) lookupWrite(key string, now int64) (*entry, bool) {
+	e, ok := s.data[key]
+	if !ok {
+		return nil, false
+	}
+	if isExpired(e, now) {
+		delete(s.data, key)
+		s.expired.Add(1)
+		return nil, false
+	}
+	return e, true
+}
+
+// Get returns a copy of the string stored at key.
+func (s *Store) Get(key string) ([]byte, bool, error) {
+	now := s.now()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	e, ok := s.lookupRead(key, now)
+	if !ok {
+		s.misses.Add(1)
+		return nil, false, nil
+	}
+	sv, ok := e.value.(*stringValue)
+	if !ok {
+		return nil, false, ErrWrongType
+	}
 	s.hits.Add(1)
-	return value, true
+	return clone(sv.data), true, nil
 }
 
 // SetOptions controls the behaviour of Set.
@@ -154,6 +188,9 @@ type SetOptions struct {
 	KeepTTL   bool
 	HasExpire bool
 	ExpireAt  int64 // unix milliseconds
+	// Get asks for the previous string value, and makes Set reject keys of
+	// another type the way SET ... GET does.
+	Get bool
 }
 
 // SetResult reports what Set did and what it replaced.
@@ -163,27 +200,27 @@ type SetResult struct {
 	HadOld  bool
 }
 
-// Set stores value at key and applies the expiry described by opts.
-func (s *Store) Set(key string, value []byte, opts SetOptions) SetResult {
+// Set stores value at key, replacing a value of any type unless Get is set.
+func (s *Store) Set(key string, value []byte, opts SetOptions) (SetResult, error) {
 	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	current, exists := s.data[key]
-	if exists && isExpired(current, now) {
-		delete(s.data, key)
-		s.expired.Add(1)
-		exists = false
-		current = nil
-	}
+	current, exists := s.lookupWrite(key, now)
 
 	var res SetResult
 	if exists {
-		res.Old = clone(current.value)
-		res.HadOld = true
+		sv, ok := current.value.(*stringValue)
+		if opts.Get && !ok {
+			return SetResult{}, ErrWrongType
+		}
+		if ok {
+			res.Old = clone(sv.data)
+			res.HadOld = true
+		}
 	}
 	if (opts.NX && exists) || (opts.XX && !exists) {
-		return res
+		return res, nil
 	}
 
 	expireAt := int64(0)
@@ -199,29 +236,28 @@ func (s *Store) Set(key string, value []byte, opts SetOptions) SetResult {
 
 	if expireAt != 0 && expireAt <= now {
 		delete(s.data, key)
-		return res
+		return res, nil
 	}
-	s.data[key] = &entry{value: clone(value), expireAt: expireAt}
-	return res
+	s.data[key] = &entry{
+		value:    &stringValue{data: clone(value)},
+		expireAt: expireAt,
+	}
+	return res, nil
 }
 
-// KeyValue is a key/value pair used by MSET-style operations.
+// KeyValue is a key/value pair used by MSET-style and HSET-style operations.
 type KeyValue struct {
 	Key   string
 	Value []byte
 }
 
 // SetMany writes every pair under one lock so the batch is atomic to readers.
+// It replaces values of any type, as MSET does.
 func (s *Store) SetMany(pairs []KeyValue) {
-	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, pair := range pairs {
-		if current, ok := s.data[pair.Key]; ok && isExpired(current, now) {
-			delete(s.data, pair.Key)
-			s.expired.Add(1)
-		}
-		s.data[pair.Key] = &entry{value: clone(pair.Value)}
+		s.data[pair.Key] = &entry{value: &stringValue{data: clone(pair.Value)}}
 	}
 	s.sets.Add(uint64(len(pairs)))
 }
@@ -232,17 +268,12 @@ func (s *Store) SetManyNX(pairs []KeyValue) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, pair := range pairs {
-		if current, ok := s.data[pair.Key]; ok {
-			if isExpired(current, now) {
-				delete(s.data, pair.Key)
-				s.expired.Add(1)
-				continue
-			}
+		if _, ok := s.lookupWrite(pair.Key, now); ok {
 			return false
 		}
 	}
 	for _, pair := range pairs {
-		s.data[pair.Key] = &entry{value: clone(pair.Value)}
+		s.data[pair.Key] = &entry{value: &stringValue{data: clone(pair.Value)}}
 	}
 	s.sets.Add(uint64(len(pairs)))
 	return true
@@ -278,7 +309,7 @@ func (s *Store) Exists(keys []string) int64 {
 
 	var n int64
 	for _, key := range keys {
-		if e, ok := s.data[key]; ok && !isExpired(e, now) {
+		if _, ok := s.lookupRead(key, now); ok {
 			n++
 		}
 	}
@@ -290,44 +321,47 @@ func (s *Store) Type(key string) string {
 	now := s.now()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	e, ok := s.data[key]
-	if !ok || isExpired(e, now) {
+	e, ok := s.lookupRead(key, now)
+	if !ok {
 		return "none"
 	}
-	return "string"
+	return e.value.kind().String()
 }
 
-// Append appends suffix to the value at key and returns the new length.
-func (s *Store) Append(key string, suffix []byte) int {
+// Append appends suffix to the string at key and returns the new length.
+func (s *Store) Append(key string, suffix []byte) (int, error) {
 	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	e, ok := s.data[key]
-	if ok && isExpired(e, now) {
-		delete(s.data, key)
-		s.expired.Add(1)
-		ok = false
-	}
+	e, ok := s.lookupWrite(key, now)
 	if !ok {
-		s.data[key] = &entry{value: clone(suffix)}
+		s.data[key] = &entry{value: &stringValue{data: clone(suffix)}}
 		s.sets.Add(1)
-		return len(suffix)
+		return len(suffix), nil
 	}
-	e.value = append(e.value, suffix...)
-	return len(e.value)
+	sv, ok := e.value.(*stringValue)
+	if !ok {
+		return 0, ErrWrongType
+	}
+	sv.data = append(sv.data, suffix...)
+	return len(sv.data), nil
 }
 
-// StrLen returns the length of the value at key.
-func (s *Store) StrLen(key string) int64 {
+// StrLen returns the length of the string at key.
+func (s *Store) StrLen(key string) (int64, error) {
 	now := s.now()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	e, ok := s.data[key]
-	if !ok || isExpired(e, now) {
-		return 0
+	e, ok := s.lookupRead(key, now)
+	if !ok {
+		return 0, nil
 	}
-	return int64(len(e.value))
+	sv, ok := e.value.(*stringValue)
+	if !ok {
+		return 0, ErrWrongType
+	}
+	return int64(len(sv.data)), nil
 }
 
 // IncrBy adds delta to the integer stored at key, initializing missing keys to
@@ -337,16 +371,14 @@ func (s *Store) IncrBy(key string, delta int64) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	e, ok := s.data[key]
-	if ok && isExpired(e, now) {
-		delete(s.data, key)
-		s.expired.Add(1)
-		ok = false
-	}
-
+	e, ok := s.lookupWrite(key, now)
 	var current int64
 	if ok {
-		parsed, err := strconv.ParseInt(string(e.value), 10, 64)
+		sv, isString := e.value.(*stringValue)
+		if !isString {
+			return 0, ErrWrongType
+		}
+		parsed, err := strconv.ParseInt(string(sv.data), 10, 64)
 		if err != nil {
 			return 0, ErrNotInteger
 		}
@@ -358,9 +390,10 @@ func (s *Store) IncrBy(key string, delta int64) (int64, error) {
 
 	next := current + delta
 	if ok {
-		e.value = strconv.AppendInt(e.value[:0], next, 10)
+		sv := e.value.(*stringValue)
+		sv.data = strconv.AppendInt(sv.data[:0], next, 10)
 	} else {
-		s.data[key] = &entry{value: strconv.AppendInt(nil, next, 10)}
+		s.data[key] = &entry{value: &stringValue{data: strconv.AppendInt(nil, next, 10)}}
 		s.sets.Add(1)
 	}
 	return next, nil
@@ -383,12 +416,8 @@ func (s *Store) Expire(key string, expireAt int64, mode ExpireMode) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	e, ok := s.data[key]
-	if !ok || isExpired(e, now) {
-		if ok {
-			delete(s.data, key)
-			s.expired.Add(1)
-		}
+	e, ok := s.lookupWrite(key, now)
+	if !ok {
 		return false
 	}
 
@@ -432,8 +461,8 @@ func (s *Store) TTLMillis(key string) int64 {
 	now := s.now()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	e, ok := s.data[key]
-	if !ok || isExpired(e, now) {
+	e, ok := s.lookupRead(key, now)
+	if !ok {
 		return ExpiryMissing
 	}
 	if e.expireAt == 0 {
@@ -448,8 +477,8 @@ func (s *Store) ExpireTimeMillis(key string) int64 {
 	now := s.now()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	e, ok := s.data[key]
-	if !ok || isExpired(e, now) {
+	e, ok := s.lookupRead(key, now)
+	if !ok {
 		return ExpiryMissing
 	}
 	if e.expireAt == 0 {
@@ -463,12 +492,8 @@ func (s *Store) Persist(key string) bool {
 	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	e, ok := s.data[key]
-	if !ok || isExpired(e, now) {
-		if ok {
-			delete(s.data, key)
-			s.expired.Add(1)
-		}
+	e, ok := s.lookupWrite(key, now)
+	if !ok {
 		return false
 	}
 	if e.expireAt == 0 {
@@ -511,9 +536,13 @@ func (s *Store) Scan(cursor uint64, pattern string, count int, typeName string) 
 	s.mu.RLock()
 	keys := make([]string, 0, len(s.data))
 	for key, e := range s.data {
-		if !isExpired(e, now) {
-			keys = append(keys, key)
+		if isExpired(e, now) {
+			continue
 		}
+		if typeName != "" && typeName != "string" && typeName != e.value.kind().String() {
+			continue
+		}
+		keys = append(keys, key)
 	}
 	s.mu.RUnlock()
 	sort.Strings(keys)
@@ -531,9 +560,6 @@ func (s *Store) Scan(cursor uint64, pattern string, count int, typeName string) 
 		cursor++
 		examined++
 		if pattern != "" && pattern != "*" && !Match(pattern, key) {
-			continue
-		}
-		if typeName != "" && typeName != "string" {
 			continue
 		}
 		out = append(out, key)
@@ -564,12 +590,8 @@ func (s *Store) Rename(src, dst string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	e, ok := s.data[src]
-	if !ok || isExpired(e, now) {
-		if ok {
-			delete(s.data, src)
-			s.expired.Add(1)
-		}
+	e, ok := s.lookupWrite(src, now)
+	if !ok {
 		return false
 	}
 	delete(s.data, src)
@@ -583,15 +605,11 @@ func (s *Store) RenameNX(src, dst string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	e, ok := s.data[src]
-	if !ok || isExpired(e, now) {
-		if ok {
-			delete(s.data, src)
-			s.expired.Add(1)
-		}
+	e, ok := s.lookupWrite(src, now)
+	if !ok {
 		return false
 	}
-	if existing, ok := s.data[dst]; ok && !isExpired(existing, now) {
+	if _, exists := s.lookupWrite(dst, now); exists {
 		return false
 	}
 	delete(s.data, src)
@@ -630,18 +648,72 @@ func (s *Store) Flush() {
 	s.mu.Unlock()
 }
 
-// Snapshot calls fn for every live key. The value slice is only valid for the
-// duration of the call.
-func (s *Store) Snapshot(fn func(key string, value []byte, expireAt int64)) {
+// EmitSnapshot calls emit with canonical commands that recreate the keyspace.
+// The append-only-file rewriter uses it; emit must not retain the slices.
+func (s *Store) EmitSnapshot(emit func(args [][]byte)) {
 	now := s.now()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
 	for key, e := range s.data {
 		if isExpired(e, now) {
 			continue
 		}
-		fn(key, e.value, e.expireAt)
+		switch v := e.value.(type) {
+		case *stringValue:
+			cmd := [][]byte{[]byte("SET"), []byte(key), clone(v.data)}
+			if e.expireAt != 0 {
+				cmd = append(cmd, []byte("PXAT"), []byte(strconv.FormatInt(e.expireAt, 10)))
+			}
+			emit(cmd)
+		case *hashValue:
+			fields := sortedKeys(v.fields)
+			for start := 0; start < len(fields); start += snapshotChunk {
+				end := min(start+snapshotChunk, len(fields))
+				cmd := [][]byte{[]byte("HSET"), []byte(key)}
+				for _, field := range fields[start:end] {
+					cmd = append(cmd, []byte(field), clone(v.fields[field]))
+				}
+				emit(cmd)
+			}
+			emitExpiry(emit, key, e.expireAt)
+		case *listValue:
+			items := v.toSlice()
+			for start := 0; start < len(items); start += snapshotChunk {
+				end := min(start+snapshotChunk, len(items))
+				cmd := [][]byte{[]byte("RPUSH"), []byte(key)}
+				for _, item := range items[start:end] {
+					cmd = append(cmd, clone(item))
+				}
+				emit(cmd)
+			}
+			emitExpiry(emit, key, e.expireAt)
+		case *setValue:
+			members := sortedSetKeys(v.members)
+			for start := 0; start < len(members); start += snapshotChunk {
+				end := min(start+snapshotChunk, len(members))
+				cmd := [][]byte{[]byte("SADD"), []byte(key)}
+				for _, member := range members[start:end] {
+					cmd = append(cmd, []byte(member))
+				}
+				emit(cmd)
+			}
+			emitExpiry(emit, key, e.expireAt)
+		}
 	}
+}
+
+const snapshotChunk = 128
+
+func emitExpiry(emit func(args [][]byte), key string, expireAt int64) {
+	if expireAt == 0 {
+		return
+	}
+	emit([][]byte{
+		[]byte("PEXPIREAT"),
+		[]byte(key),
+		[]byte(strconv.FormatInt(expireAt, 10)),
+	})
 }
 
 func isExpired(e *entry, now int64) bool {
@@ -654,5 +726,23 @@ func clone(b []byte) []byte {
 	}
 	out := make([]byte, len(b))
 	copy(out, b)
+	return out
+}
+
+func sortedKeys(m map[string][]byte) []string {
+	out := make([]string, 0, len(m))
+	for key := range m {
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sortedSetKeys(m map[string]struct{}) []string {
+	out := make([]string, 0, len(m))
+	for key := range m {
+		out = append(out, key)
+	}
+	sort.Strings(out)
 	return out
 }

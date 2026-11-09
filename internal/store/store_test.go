@@ -19,12 +19,18 @@ func newTestStore() (*Store, *testClock) {
 func TestSetGet(t *testing.T) {
 	s, _ := newTestStore()
 
-	res := s.Set("key", []byte("value"), SetOptions{})
+	res, err := s.Set("key", []byte("value"), SetOptions{})
+	if err != nil {
+		t.Fatalf("Set: %v", err)
+	}
 	if !res.Written || res.HadOld {
 		t.Fatalf("unexpected result: %+v", res)
 	}
 
-	got, ok := s.Get("key")
+	got, ok, err := s.Get("key")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
 	if !ok || string(got) != "value" {
 		t.Fatalf("Get = %q, %v", got, ok)
 	}
@@ -32,12 +38,14 @@ func TestSetGet(t *testing.T) {
 
 func TestGetCopiesValue(t *testing.T) {
 	s, _ := newTestStore()
-	s.Set("key", []byte("value"), SetOptions{})
+	if _, err := s.Set("key", []byte("value"), SetOptions{}); err != nil {
+		t.Fatal(err)
+	}
 
-	first, _ := s.Get("key")
+	first, _, _ := s.Get("key")
 	first[0] = 'X'
 
-	second, _ := s.Get("key")
+	second, _, _ := s.Get("key")
 	if string(second) != "value" {
 		t.Fatalf("stored value was mutated through a returned slice: %q", second)
 	}
@@ -46,10 +54,18 @@ func TestGetCopiesValue(t *testing.T) {
 func TestSetNXAndXX(t *testing.T) {
 	s, _ := newTestStore()
 
-	if res := s.Set("key", []byte("one"), SetOptions{NX: true}); !res.Written {
+	res, err := s.Set("key", []byte("one"), SetOptions{NX: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Written {
 		t.Fatal("NX on missing key should write")
 	}
-	res := s.Set("key", []byte("two"), SetOptions{NX: true})
+
+	res, err = s.Set("key", []byte("two"), SetOptions{NX: true})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if res.Written {
 		t.Fatal("NX on existing key should not write")
 	}
@@ -57,23 +73,34 @@ func TestSetNXAndXX(t *testing.T) {
 		t.Fatalf("NX failure should report the old value, got %q", res.Old)
 	}
 
-	if res := s.Set("missing", []byte("x"), SetOptions{XX: true}); res.Written {
+	res, err = s.Set("missing", []byte("x"), SetOptions{XX: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Written {
 		t.Fatal("XX on missing key should not write")
 	}
-	if res := s.Set("key", []byte("three"), SetOptions{XX: true}); !res.Written {
+
+	res, err = s.Set("key", []byte("three"), SetOptions{XX: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Written {
 		t.Fatal("XX on existing key should write")
 	}
 }
 
 func TestExpiryIsLazy(t *testing.T) {
 	s, clock := newTestStore()
-	s.Set("key", []byte("v"), SetOptions{HasExpire: true, ExpireAt: clock.ms + 1000})
+	if _, err := s.Set("key", []byte("v"), SetOptions{HasExpire: true, ExpireAt: clock.ms + 1000}); err != nil {
+		t.Fatal(err)
+	}
 
-	if _, ok := s.Get("key"); !ok {
+	if _, ok, _ := s.Get("key"); !ok {
 		t.Fatal("key should exist before expiry")
 	}
 	clock.ms += 1001
-	if _, ok := s.Get("key"); ok {
+	if _, ok, _ := s.Get("key"); ok {
 		t.Fatal("key should be expired")
 	}
 	if got := s.TTLMillis("key"); got != ExpiryMissing {
@@ -83,10 +110,14 @@ func TestExpiryIsLazy(t *testing.T) {
 
 func TestSetWithPastExpiryDeletes(t *testing.T) {
 	s, clock := newTestStore()
-	s.Set("key", []byte("v"), SetOptions{})
-	s.Set("key", []byte("v"), SetOptions{HasExpire: true, ExpireAt: clock.ms - 1})
+	if _, err := s.Set("key", []byte("v"), SetOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Set("key", []byte("v"), SetOptions{HasExpire: true, ExpireAt: clock.ms - 1}); err != nil {
+		t.Fatal(err)
+	}
 
-	if _, ok := s.Get("key"); ok {
+	if _, ok, _ := s.Get("key"); ok {
 		t.Fatal("key should not exist after a past expiry")
 	}
 }
@@ -94,8 +125,12 @@ func TestSetWithPastExpiryDeletes(t *testing.T) {
 func TestKeepTTL(t *testing.T) {
 	s, clock := newTestStore()
 	expireAt := clock.ms + 5000
-	s.Set("key", []byte("one"), SetOptions{HasExpire: true, ExpireAt: expireAt})
-	s.Set("key", []byte("two"), SetOptions{KeepTTL: true})
+	if _, err := s.Set("key", []byte("one"), SetOptions{HasExpire: true, ExpireAt: expireAt}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Set("key", []byte("two"), SetOptions{KeepTTL: true}); err != nil {
+		t.Fatal(err)
+	}
 
 	if got := s.ExpireTimeMillis("key"); got != expireAt {
 		t.Fatalf("expiry = %d, want %d", got, expireAt)
@@ -114,12 +149,16 @@ func TestIncrBy(t *testing.T) {
 		t.Fatalf("second increment = %d, %v", n, err)
 	}
 
-	s.Set("text", []byte("nope"), SetOptions{})
+	if _, err := s.Set("text", []byte("nope"), SetOptions{}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.IncrBy("text", 1); !errors.Is(err, ErrNotInteger) {
 		t.Fatalf("want ErrNotInteger, got %v", err)
 	}
 
-	s.Set("max", []byte(strconv.FormatInt(1<<63-1, 10)), SetOptions{})
+	if _, err := s.Set("max", []byte(strconv.FormatInt(1<<63-1, 10)), SetOptions{}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.IncrBy("max", 1); !errors.Is(err, ErrOverflow) {
 		t.Fatalf("want ErrOverflow, got %v", err)
 	}
@@ -127,7 +166,9 @@ func TestIncrBy(t *testing.T) {
 
 func TestExpireModes(t *testing.T) {
 	s, clock := newTestStore()
-	s.Set("key", []byte("v"), SetOptions{})
+	if _, err := s.Set("key", []byte("v"), SetOptions{}); err != nil {
+		t.Fatal(err)
+	}
 
 	if !s.Expire("key", clock.ms+1000, ExpireNX) {
 		t.Fatal("NX should set expiry on a persistent key")
@@ -148,7 +189,9 @@ func TestExpireModes(t *testing.T) {
 		t.Fatal("LT should reject a higher expiry")
 	}
 
-	s.Set("plain", []byte("v"), SetOptions{})
+	if _, err := s.Set("plain", []byte("v"), SetOptions{}); err != nil {
+		t.Fatal(err)
+	}
 	if s.Expire("plain", clock.ms+1000, ExpireXX) {
 		t.Fatal("XX should not set expiry on a persistent key")
 	}
@@ -162,11 +205,15 @@ func TestTTL(t *testing.T) {
 	if got := s.TTLMillis("missing"); got != ExpiryMissing {
 		t.Fatalf("missing TTL = %d", got)
 	}
-	s.Set("plain", []byte("v"), SetOptions{})
+	if _, err := s.Set("plain", []byte("v"), SetOptions{}); err != nil {
+		t.Fatal(err)
+	}
 	if got := s.TTLMillis("plain"); got != ExpiryNoExpiry {
 		t.Fatalf("persistent TTL = %d", got)
 	}
-	s.Set("timed", []byte("v"), SetOptions{HasExpire: true, ExpireAt: clock.ms + 1500})
+	if _, err := s.Set("timed", []byte("v"), SetOptions{HasExpire: true, ExpireAt: clock.ms + 1500}); err != nil {
+		t.Fatal(err)
+	}
 	if got := s.TTLMillis("timed"); got != 1500 {
 		t.Fatalf("timed TTL = %d, want 1500", got)
 	}
@@ -180,23 +227,30 @@ func TestTTL(t *testing.T) {
 
 func TestAppendAndStrLen(t *testing.T) {
 	s, _ := newTestStore()
-	if n := s.Append("k", []byte("hello")); n != 5 {
-		t.Fatalf("append length = %d, want 5", n)
+	n, err := s.Append("k", []byte("hello"))
+	if err != nil || n != 5 {
+		t.Fatalf("append length = %d, %v", n, err)
 	}
-	if n := s.Append("k", []byte(" world")); n != 11 {
-		t.Fatalf("append length = %d, want 11", n)
+	n, err = s.Append("k", []byte(" world"))
+	if err != nil || n != 11 {
+		t.Fatalf("append length = %d, %v", n, err)
 	}
-	if n := s.StrLen("k"); n != 11 {
-		t.Fatalf("strlen = %d, want 11", n)
+	length, err := s.StrLen("k")
+	if err != nil || length != 11 {
+		t.Fatalf("strlen = %d, %v", length, err)
 	}
 }
 
 func TestKeysAndScan(t *testing.T) {
 	s, _ := newTestStore()
 	for i := 0; i < 25; i++ {
-		s.Set("key:"+strconv.Itoa(i), []byte("v"), SetOptions{})
+		if _, err := s.Set("key:"+strconv.Itoa(i), []byte("v"), SetOptions{}); err != nil {
+			t.Fatal(err)
+		}
 	}
-	s.Set("other", []byte("v"), SetOptions{})
+	if _, err := s.Set("other", []byte("v"), SetOptions{}); err != nil {
+		t.Fatal(err)
+	}
 
 	keys := s.Keys("key:*")
 	if len(keys) != 25 {
@@ -237,7 +291,9 @@ func TestKeysAndScan(t *testing.T) {
 func TestScanIsSorted(t *testing.T) {
 	s, _ := newTestStore()
 	for _, key := range []string{"c", "a", "b"} {
-		s.Set(key, []byte("v"), SetOptions{})
+		if _, err := s.Set(key, []byte("v"), SetOptions{}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	_, page := s.Scan(0, "*", 10, "")
 	if !sort.StringsAreSorted(page) {
@@ -251,18 +307,22 @@ func TestRename(t *testing.T) {
 		t.Fatal("renaming a missing key should fail")
 	}
 
-	s.Set("src", []byte("v"), SetOptions{})
+	if _, err := s.Set("src", []byte("v"), SetOptions{}); err != nil {
+		t.Fatal(err)
+	}
 	if !s.Rename("src", "dst") {
 		t.Fatal("rename should succeed")
 	}
-	if _, ok := s.Get("src"); ok {
+	if _, ok, _ := s.Get("src"); ok {
 		t.Fatal("source should be gone")
 	}
-	if value, ok := s.Get("dst"); !ok || string(value) != "v" {
+	if value, ok, _ := s.Get("dst"); !ok || string(value) != "v" {
 		t.Fatal("destination should hold the value")
 	}
 
-	s.Set("other", []byte("x"), SetOptions{})
+	if _, err := s.Set("other", []byte("x"), SetOptions{}); err != nil {
+		t.Fatal(err)
+	}
 	if s.RenameNX("dst", "other") {
 		t.Fatal("RENAMENX should fail when the destination exists")
 	}
@@ -270,8 +330,12 @@ func TestRename(t *testing.T) {
 
 func TestDelCountsOnlyLiveKeys(t *testing.T) {
 	s, clock := newTestStore()
-	s.Set("live", []byte("v"), SetOptions{})
-	s.Set("dead", []byte("v"), SetOptions{HasExpire: true, ExpireAt: clock.ms - 1})
+	if _, err := s.Set("live", []byte("v"), SetOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Set("dead", []byte("v"), SetOptions{HasExpire: true, ExpireAt: clock.ms - 1}); err != nil {
+		t.Fatal(err)
+	}
 
 	if n := s.Del([]string{"live", "dead", "missing"}); n != 1 {
 		t.Fatalf("DEL removed %d keys, want 1", n)
@@ -287,16 +351,22 @@ func TestSetManyNX(t *testing.T) {
 	if s.SetManyNX([]KeyValue{{Key: "b", Value: []byte("x")}, {Key: "c", Value: []byte("y")}}) {
 		t.Fatal("second MSETNX should fail")
 	}
-	if _, ok := s.Get("c"); ok {
+	if _, ok, _ := s.Get("c"); ok {
 		t.Fatal("MSETNX must not partially apply")
 	}
 }
 
 func TestKeyCounts(t *testing.T) {
 	s, clock := newTestStore()
-	s.Set("a", []byte("v"), SetOptions{})
-	s.Set("b", []byte("v"), SetOptions{HasExpire: true, ExpireAt: clock.ms + 1000})
-	s.Set("c", []byte("v"), SetOptions{HasExpire: true, ExpireAt: clock.ms - 1})
+	if _, err := s.Set("a", []byte("v"), SetOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Set("b", []byte("v"), SetOptions{HasExpire: true, ExpireAt: clock.ms + 1000}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Set("c", []byte("v"), SetOptions{HasExpire: true, ExpireAt: clock.ms - 1}); err != nil {
+		t.Fatal(err)
+	}
 
 	keys, expiring := s.KeyCounts()
 	if keys != 2 || expiring != 1 {
@@ -304,14 +374,18 @@ func TestKeyCounts(t *testing.T) {
 	}
 }
 
-func TestSnapshotSkipsExpired(t *testing.T) {
+func TestEmitSnapshotSkipsExpired(t *testing.T) {
 	s, clock := newTestStore()
-	s.Set("a", []byte("1"), SetOptions{})
-	s.Set("b", []byte("2"), SetOptions{HasExpire: true, ExpireAt: clock.ms - 1})
+	if _, err := s.Set("a", []byte("1"), SetOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Set("b", []byte("2"), SetOptions{HasExpire: true, ExpireAt: clock.ms - 1}); err != nil {
+		t.Fatal(err)
+	}
 
 	seen := map[string]bool{}
-	s.Snapshot(func(key string, value []byte, expireAt int64) {
-		seen[key] = true
+	s.EmitSnapshot(func(args [][]byte) {
+		seen[string(args[1])] = true
 	})
 	if seen["b"] || !seen["a"] {
 		t.Fatalf("snapshot included the wrong keys: %v", seen)
@@ -320,7 +394,9 @@ func TestSnapshotSkipsExpired(t *testing.T) {
 
 func TestFlush(t *testing.T) {
 	s, _ := newTestStore()
-	s.Set("a", []byte("1"), SetOptions{})
+	if _, err := s.Set("a", []byte("1"), SetOptions{}); err != nil {
+		t.Fatal(err)
+	}
 	s.Flush()
 	if n := s.DBSize(); n != 0 {
 		t.Fatalf("DBSize after Flush = %d", n)

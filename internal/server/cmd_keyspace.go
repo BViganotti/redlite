@@ -125,7 +125,7 @@ func cmdRename(c *client, args [][]byte) (result, error) {
 
 func cmdRenameNX(c *client, args [][]byte) (result, error) {
 	src := string(args[1])
-	if _, ok := c.srv.data.Get(src); !ok {
+	if c.srv.data.Exists([]string{src}) == 0 {
 		return result{}, fmt.Errorf("ERR no such key")
 	}
 	if !c.srv.data.RenameNX(src, string(args[2])) {

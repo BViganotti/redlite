@@ -48,7 +48,10 @@ func init() {
 }
 
 func cmdGet(c *client, args [][]byte) (result, error) {
-	value, ok := c.srv.data.Get(string(args[1]))
+	value, ok, err := c.srv.data.Get(string(args[1]))
+	if err != nil {
+		return result{}, err
+	}
 	return result{reply: bulkOrNull(value, ok)}, nil
 }
 
@@ -116,13 +119,17 @@ func cmdSet(c *client, args [][]byte) (result, error) {
 		return result{}, err
 	}
 
-	res := c.srv.data.Set(key, value, store.SetOptions{
+	res, err := c.srv.data.Set(key, value, store.SetOptions{
 		NX:        spec.nx,
 		XX:        spec.xx,
 		KeepTTL:   spec.keepTTL,
 		HasExpire: spec.hasExpire,
 		ExpireAt:  spec.expireAt,
+		Get:       spec.get,
 	})
+	if err != nil {
+		return result{}, err
+	}
 
 	out := result{mutated: res.Written}
 	if res.Written {
@@ -154,7 +161,10 @@ func canonicalSet(key string, value []byte, spec setSpec) [][]byte {
 
 func cmdSetNX(c *client, args [][]byte) (result, error) {
 	key := string(args[1])
-	res := c.srv.data.Set(key, args[2], store.SetOptions{NX: true})
+	res, err := c.srv.data.Set(key, args[2], store.SetOptions{NX: true})
+	if err != nil {
+		return result{}, err
+	}
 	if !res.Written {
 		return result{reply: intReply(0)}, nil
 	}
@@ -180,19 +190,27 @@ func setWithTTL(c *client, args [][]byte, unitMs int64, cmdName string) (result,
 	if err != nil {
 		return result{}, invalidExpireTime(cmdName)
 	}
-	c.srv.data.Set(key, args[3], store.SetOptions{HasExpire: true, ExpireAt: at})
+	if _, err := c.srv.data.Set(key, args[3], store.SetOptions{HasExpire: true, ExpireAt: at}); err != nil {
+		return result{}, err
+	}
 	out := [][]byte{[]byte("SET"), []byte(key), args[3], []byte("PXAT"), []byte(strconv.FormatInt(at, 10))}
 	return result{reply: simpleReply("OK"), mutated: true, rewrite: out}, nil
 }
 
 func cmdGetSet(c *client, args [][]byte) (result, error) {
-	res := c.srv.data.Set(string(args[1]), args[2], store.SetOptions{})
+	res, err := c.srv.data.Set(string(args[1]), args[2], store.SetOptions{Get: true})
+	if err != nil {
+		return result{}, err
+	}
 	return result{reply: bulkOrNull(res.Old, res.HadOld), mutated: true}, nil
 }
 
 func cmdGetDel(c *client, args [][]byte) (result, error) {
 	key := string(args[1])
-	value, ok := c.srv.data.Get(key)
+	value, ok, err := c.srv.data.Get(key)
+	if err != nil {
+		return result{}, err
+	}
 	if !ok {
 		return result{reply: null}, nil
 	}
@@ -240,7 +258,10 @@ func cmdGetEx(c *client, args [][]byte) (result, error) {
 		}
 	}
 
-	value, ok := c.srv.data.Get(key)
+	value, ok, err := c.srv.data.Get(key)
+	if err != nil {
+		return result{}, err
+	}
 	if !ok {
 		return result{reply: null}, nil
 	}
@@ -264,7 +285,15 @@ func cmdGetEx(c *client, args [][]byte) (result, error) {
 func cmdMGet(c *client, args [][]byte) (result, error) {
 	out := make(arrayReply, 0, len(args)-1)
 	for _, key := range args[1:] {
-		value, ok := c.srv.data.Get(string(key))
+		value, ok, err := c.srv.data.Get(string(key))
+		if errors.Is(err, store.ErrWrongType) {
+			// MGET reports a non-string value as nil instead of failing.
+			out = append(out, null)
+			continue
+		}
+		if err != nil {
+			return result{}, err
+		}
 		out = append(out, bulkOrNull(value, ok))
 	}
 	return result{reply: out}, nil
@@ -297,12 +326,19 @@ func cmdMSetNX(c *client, args [][]byte) (result, error) {
 }
 
 func cmdAppend(c *client, args [][]byte) (result, error) {
-	n := c.srv.data.Append(string(args[1]), args[2])
+	n, err := c.srv.data.Append(string(args[1]), args[2])
+	if err != nil {
+		return result{}, err
+	}
 	return result{reply: intReply(int64(n)), mutated: true}, nil
 }
 
 func cmdStrLen(c *client, args [][]byte) (result, error) {
-	return result{reply: intReply(c.srv.data.StrLen(string(args[1])))}, nil
+	n, err := c.srv.data.StrLen(string(args[1]))
+	if err != nil {
+		return result{}, err
+	}
+	return result{reply: intReply(n)}, nil
 }
 
 func cmdIncr(c *client, args [][]byte) (result, error) {

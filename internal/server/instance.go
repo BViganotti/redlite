@@ -304,15 +304,11 @@ func (s *Server) rewriteAOF() error {
 	}
 	err := s.aof.Rewrite(func(w *resp.Writer) error {
 		var writeErr error
-		s.data.Snapshot(func(key string, value []byte, expireAt int64) {
+		s.data.EmitSnapshot(func(args [][]byte) {
 			if writeErr != nil {
 				return
 			}
-			command := [][]byte{[]byte("SET"), []byte(key), value}
-			if expireAt != 0 {
-				command = append(command, []byte("PXAT"), []byte(strconv.FormatInt(expireAt, 10)))
-			}
-			writeErr = writeCommand(w, command)
+			writeErr = writeCommand(w, args)
 		})
 		return writeErr
 	})
