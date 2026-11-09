@@ -231,6 +231,8 @@ check raw RPUSH ml a b c
 check raw LMOVE ml ml2 RIGHT LEFT
 check raw RPOPLPUSH ml ml2
 check sort LRANGE ml2 0 -1
+check raw SAVE
+check raw BGSAVE
 
 # Errors
 check raw HSET h odd
