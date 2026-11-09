@@ -188,6 +188,7 @@ pass a `Logger`.
 | `--timeout` | `0` | Idle client timeout; `0` disables. |
 | `--requirepass` | none | Password clients must send with `AUTH`. |
 | `--masterauth` | none | Password a replica sends to its primary. |
+| `--notify-keyspace-events` | none | Keyspace event flags, for example `KEA`. |
 | `--version` | | Print the version and exit. |
 
 At runtime:
@@ -197,6 +198,21 @@ $ redis-cli CONFIG GET maxclients
 $ redis-cli CONFIG SET maxclients 2048
 $ redis-cli CONFIG SET appendfsync always
 ```
+
+## Keyspace notifications
+
+Enable events and subscribe to the Redis channel names:
+
+```console
+$ redis-cli CONFIG SET notify-keyspace-events KEA
+OK
+$ redis-cli PSUBSCRIBE '__keyevent@0__:*'
+$ redis-cli SET greeting hello
+```
+
+Flags follow Redis: `K` keyspace channel, `E` keyevent channel, `A` all
+categories, and `g`, `$`, `l`, `s`, `h`, `z`, `x` for generic, string, list,
+set, hash, sorted-set and expired events.
 
 ## Authentication
 

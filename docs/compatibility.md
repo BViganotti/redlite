@@ -125,6 +125,20 @@ runs. It is a debugging command, exactly as in Redis.
 - `INFO replication` reports the role, link status, primary address and the
   number of attached replicas.
 
+### Keyspace notifications
+
+- Enabled with `notify-keyspace-events` (at startup or `CONFIG SET`). `K`
+  publishes to `__keyspace@0__:<key>`, `E` to `__keyevent@0__:<event>`, `A`
+  enables every category.
+- Supported categories: `g` (generic), `$` (string), `l` (list), `s` (set),
+  `h` (hash), `z` (sorted set), `x` (expired). The `m` (key miss) flag is
+  accepted but ignored.
+- Delivery is best effort. Messages share the pub/sub path, which writes
+  synchronously with a deadline; a subscriber that cannot keep up loses
+  messages rather than growing an unbounded buffer.
+- Expired events come from both the background sampler and lazy expiration.
+- Events are not propagated to replicas; each instance emits its own.
+
 ### Transactions
 
 - `MULTI`, `EXEC`, `DISCARD`, `WATCH` and `UNWATCH` are supported.

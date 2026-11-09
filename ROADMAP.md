@@ -33,7 +33,7 @@ duplicate effort.
 - [x] `MULTI` / `EXEC` / `DISCARD` / `WATCH`
 - [x] Blocking variants (`BLPOP`, `BRPOP`, `BLMOVE`, `BRPOPLPUSH`) with timeouts
 - [x] `PUBLISH` / `SUBSCRIBE` / `PSUBSCRIBE`, including RESP3 push frames
-- [ ] Keyspace notifications (`CONFIG SET notify-keyspace-events`)
+- [x] Keyspace notifications (`CONFIG SET notify-keyspace-events`)
 
 ## v0.4 — durability and replication
 
