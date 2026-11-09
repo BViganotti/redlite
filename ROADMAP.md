@@ -19,12 +19,12 @@ duplicate effort.
 
 ## v0.2 — the other data types
 
-- [ ] Value model that is not `[]byte`: tagged union with type-safe dispatch
-- [ ] Hash commands (`HSET`, `HGET`, `HDEL`, `HGETALL`, `HINCRBY`, `HSCAN`)
-- [ ] List commands (`LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LRANGE`, `LLEN`, `LINDEX`)
-- [ ] Set commands (`SADD`, `SREM`, `SMEMBERS`, `SISMEMBER`, `SINTER`, `SUNION`)
+- [x] Value model that is not `[]byte`: sealed interface with type-safe dispatch
+- [x] Hash commands (`HSET`, `HGET`, `HDEL`, `HGETALL`, `HINCRBY`, `HSCAN`)
+- [x] List commands (`LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LRANGE`, `LLEN`, `LINDEX`)
+- [x] Set commands (`SADD`, `SREM`, `SMEMBERS`, `SISMEMBER`, `SINTER`, `SUNION`)
 - [ ] Sorted sets (`ZADD`, `ZRANGE`, `ZRANGEBYSCORE`, `ZRANK`, `ZINCRBY`)
-- [ ] `WRONGTYPE` errors on every cross-type access
+- [x] `WRONGTYPE` errors on every cross-type access
 - [ ] `OBJECT ENCODING` for the encodings we can honestly report
 
 ## v0.3 — concurrency semantics
@@ -54,11 +54,11 @@ duplicate effort.
 
 ## Quality track
 
-- [ ] Differential test harness: run the same command script against redlite and
-      real Redis, compare replies byte for byte
-- [ ] Fuzz the RESP parser with `go test -fuzz`
+- [x] Differential test harness: run the same command script against redlite and
+      real Redis, compare replies byte for byte (`make differential`)
+- [x] Fuzz the RESP parser and the glob matcher with `go test -fuzz`
 - [ ] Property tests for expiry and scan pagination
-- [ ] Benchmarks against Redis (`GET`, `SET`, `INCR`, pipelined)
+- [x] Benchmarks for the core store operations (`-bench .`)
 - [ ] Mutation testing to prove the suite actually catches regressions
 
 ## Tooling and distribution

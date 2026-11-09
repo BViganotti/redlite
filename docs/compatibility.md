@@ -20,6 +20,9 @@ server answers `unknown command` rather than pretending.
 | Introspection | `CLIENT` `COMMAND` `CONFIG` `INFO` `TIME` `LASTSAVE` |
 | Admin | `SHUTDOWN` `BGREWRITEAOF` |
 | Strings | `GET` `SET` `SETNX` `SETEX` `PSETEX` `GETSET` `GETDEL` `GETEX` `MGET` `MSET` `MSETNX` `APPEND` `STRLEN` `INCR` `DECR` `INCRBY` `DECRBY` |
+| Hashes | `HSET` `HSETNX` `HMSET` `HGET` `HMGET` `HDEL` `HLEN` `HEXISTS` `HKEYS` `HVALS` `HGETALL` `HINCRBY` `HSCAN` |
+| Lists | `LPUSH` `RPUSH` `LPUSHX` `RPUSHX` `LPOP` `RPOP` `LLEN` `LINDEX` `LSET` `LRANGE` `LTRIM` `LREM` |
+| Sets | `SADD` `SREM` `SCARD` `SISMEMBER` `SMISMEMBER` `SMEMBERS` `SINTER` `SUNION` `SDIFF` `SPOP` `SRANDMEMBER` `SSCAN` |
 | Keyspace | `DEL` `UNLINK` `EXISTS` `TYPE` `KEYS` `SCAN` `RANDOMKEY` `RENAME` `RENAMENX` `TOUCH` `DBSIZE` `FLUSHDB` `FLUSHALL` |
 | Expiry | `EXPIRE` `PEXPIRE` `EXPIREAT` `PEXPIREAT` `TTL` `PTTL` `PERSIST` `EXPIRETIME` `PEXPIRETIME` |
 
@@ -27,15 +30,38 @@ server answers `unknown command` rather than pretending.
 
 ### Data model
 
-- Only string values exist. `TYPE` returns `string` or `none`. Hash, list, set,
-  sorted-set and stream commands are not implemented yet (`ROADMAP.md`, v0.2).
+- Four value types exist: string, hash, list and set. Sorted sets, streams and
+  bitmaps are not implemented yet (`ROADMAP.md`, v0.2).
+- Every command checks the type and returns
+  `WRONGTYPE Operation against a key holding the wrong kind of value` instead of
+  coercing. `MGET` is the one exception Redis defines: a non-string value is
+  reported as nil.
+- `SET`, `MSET` and `GETSET` replace a value of any type. `SET ... GET` on a
+  non-string key returns `WRONGTYPE` without writing.
+- Empty hashes, lists and sets are removed from the keyspace.
 - One database. `SELECT 0` succeeds; any other index returns
   `ERR DB index is out of range`.
+
+### Ordering and randomness
+
+Redis leaves the order of `HGETALL`, `HKEYS`, `HVALS`, `SMEMBERS`, `SINTER`,
+`SUNION`, `SDIFF`, and `HSCAN`/`SSCAN` pages unspecified. Redlite returns them
+sorted. That is compatible with the contract (callers may not depend on order)
+and makes tests reproducible, but do not treat the order as portable.
+
+`SPOP` and `SRANDMEMBER` use Go's process-local PRNG. The selection is uniform
+enough for application use but is not cryptographically secure.
+
+`SRANDMEMBER` with a negative count returns exactly that many elements and may
+repeat members; with a positive count it returns unique members, at most the
+cardinality. `SPOP` with a count removes and returns that many, or everything
+when the count exceeds the cardinality.
 
 ### Scanning
 
 `SCAN` cursors are indexes into a sorted snapshot of the keyspace, not hash
-buckets. Consequences:
+buckets. `HSCAN` and `SSCAN` use the same approach over sorted field names and
+members. Consequences:
 
 - Pagination is correct and deterministic for an unchanged keyspace.
 - `COUNT` limits how many keys are *examined*, not how many are returned —
@@ -70,6 +96,9 @@ runs. It is a debugging command, exactly as in Redis.
 
 - The append-only file is a sequence of RESP commands, which is the same shape
   Redis uses, but redlite does not read Redis' RDB files.
+- A rewrite emits typed commands: `SET`/`PXAT` for strings, `HSET` for hashes,
+  `RPUSH` for lists and `SADD` for sets, in chunks of 128 elements. Every type
+  round-trips through a restart.
 - `BGREWRITEAOF` is synchronous today; the reply string is the Redis-compatible
   one so clients do not break.
 - `appendfsync everysec` can lose up to one second of acknowledged writes on a
