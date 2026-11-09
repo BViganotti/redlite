@@ -15,13 +15,17 @@ import (
 // it, which keeps protocol details out of command logic and makes ordering
 // (mutate, append to the log, then reply) explicit.
 type (
-	simpleReply string
-	bulkReply   []byte
-	intReply    int64
-	arrayReply  []any
-	mapReply    []any // alternating key, value
-	pairsReply  []any // alternating element, score; nested pairs in RESP3
-	nullReply   struct{}
+	simpleReply    string
+	bulkReply      []byte
+	intReply       int64
+	arrayReply     []any
+	mapReply       []any // alternating key, value
+	pairsReply     []any // alternating element, score; nested pairs in RESP3
+	pushReply      []any // RESP3 push frame, plain array in RESP2
+	multiReply     []any // several replies written back to back
+	errorReply     string
+	nullReply      struct{}
+	nullArrayReply struct{}
 )
 
 var null = nullReply{}
@@ -30,10 +34,14 @@ func writeReply(w *resp.Writer, v any) error {
 	switch reply := v.(type) {
 	case nil, nullReply:
 		return w.WriteNull()
+	case nullArrayReply:
+		return w.WriteNullArray()
 	case simpleReply:
 		return w.WriteSimple(string(reply))
 	case bulkReply:
 		return w.WriteBulk(reply)
+	case errorReply:
+		return w.WriteError(string(reply))
 	case intReply:
 		return w.WriteInt(int64(reply))
 	case arrayReply:
@@ -83,6 +91,23 @@ func writeReply(w *resp.Writer, v any) error {
 		if err := w.WriteArrayHeader(len(reply)); err != nil {
 			return err
 		}
+		for _, item := range reply {
+			if err := writeReply(w, item); err != nil {
+				return err
+			}
+		}
+		return nil
+	case pushReply:
+		if err := w.WritePushHeader(len(reply)); err != nil {
+			return err
+		}
+		for _, item := range reply {
+			if err := writeReply(w, item); err != nil {
+				return err
+			}
+		}
+		return nil
+	case multiReply:
 		for _, item := range reply {
 			if err := writeReply(w, item); err != nil {
 				return err
@@ -166,10 +191,60 @@ func arityOK(arity, argc int) bool {
 	return argc >= -arity
 }
 
-// execute dispatches one command: validate, run the handler, persist if the
-// handler reports a mutation, and only then let the caller reply.
+// execute dispatches one command from a connection, applying the transaction
+// gate: normal commands share a read lock, EXEC takes the write lock so a
+// queued batch cannot interleave with another client.
 func (s *Server) execute(c *client, args [][]byte) (result, error) {
 	name := strings.ToUpper(string(args[0]))
+
+	if c.multi && name != "EXEC" && name != "DISCARD" && name != "MULTI" && name != "WATCH" && name != "QUIT" {
+		return s.queueCommand(c, args)
+	}
+
+	if name == "EXEC" {
+		s.txMu.Lock()
+		defer s.txMu.Unlock()
+		return s.executeLocked(c, args, true)
+	}
+
+	s.txMu.RLock()
+	defer s.txMu.RUnlock()
+	return s.executeLocked(c, args, true)
+}
+
+// queueCommand validates a command and appends it to the current transaction.
+func (s *Server) queueCommand(c *client, args [][]byte) (result, error) {
+	name := strings.ToUpper(string(args[0]))
+	cmd, ok := lookupCommand(name)
+	if !ok {
+		c.dirty = true
+		return result{}, fmt.Errorf("ERR unknown command '%s', with args beginning with: %s",
+			printable(args[0]), previewArgs(args[1:]))
+	}
+	if !arityOK(cmd.arity, len(args)) {
+		c.dirty = true
+		return result{}, fmt.Errorf("ERR wrong number of arguments for '%s' command", strings.ToLower(name))
+	}
+
+	queued := make([][]byte, len(args))
+	for i, arg := range args {
+		queued[i] = append([]byte(nil), arg...)
+	}
+	c.queued = append(c.queued, queued)
+	return result{reply: simpleReply("QUEUED")}, nil
+}
+
+// executeLocked runs one command. propagate is false while replaying a
+// transaction, where EXEC writes the whole MULTI/EXEC block itself.
+func (s *Server) executeLocked(c *client, args [][]byte, propagate bool) (result, error) {
+	name := strings.ToUpper(string(args[0]))
+
+	if c.protoNum() < 3 && c.subscribed() && !allowedWhileSubscribed(name) {
+		return result{}, fmt.Errorf(
+			"ERR Can't execute '%s': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context",
+			strings.ToLower(name))
+	}
+
 	cmd, ok := lookupCommand(name)
 	if !ok {
 		// Redis 7 always appends the suffix, even when there are no arguments.
@@ -187,7 +262,7 @@ func (s *Server) execute(c *client, args [][]byte) (result, error) {
 		return result{}, err
 	}
 
-	if res.mutated && !s.replaying.Load() && s.aof != nil {
+	if propagate && res.mutated && !s.replaying.Load() && s.aof != nil {
 		payload := res.rewrite
 		if payload == nil {
 			payload = args
@@ -205,6 +280,14 @@ var (
 	errSyntax  = errors.New("ERR syntax error")
 	errInteger = errors.New("ERR value is not an integer or out of range")
 )
+
+func allowedWhileSubscribed(name string) bool {
+	switch name {
+	case "SUBSCRIBE", "UNSUBSCRIBE", "PSUBSCRIBE", "PUNSUBSCRIBE", "PING", "QUIT", "RESET":
+		return true
+	}
+	return false
+}
 
 func isWrongType(err error) bool  { return errors.Is(err, store.ErrWrongType) }
 func isNotInteger(err error) bool { return errors.Is(err, store.ErrNotInteger) }

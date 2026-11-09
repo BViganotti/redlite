@@ -24,8 +24,14 @@ func init() {
 func cmdPing(c *client, args [][]byte) (result, error) {
 	switch len(args) {
 	case 1:
+		if c.subscribed() {
+			return result{reply: pushReply{bulkReply("pong"), bulkReply("")}}, nil
+		}
 		return result{reply: simpleReply("PONG")}, nil
 	case 2:
+		if c.subscribed() {
+			return result{reply: pushReply{bulkReply("pong"), bulkReply(args[1])}}, nil
+		}
 		return result{reply: bulkReply(args[1])}, nil
 	default:
 		return result{}, fmt.Errorf("ERR wrong number of arguments for 'ping' command")

@@ -27,6 +27,8 @@ type Server struct {
 	data *store.Store
 	aof  *store.AOF
 
+	pubsub *pubsubRegistry
+
 	lnMu sync.Mutex
 	ln   net.Listener
 
@@ -46,6 +48,10 @@ type Server struct {
 
 	wg           sync.WaitGroup
 	shutdownOnce sync.Once
+
+	// txMu makes EXEC atomic with respect to other clients. Normal commands
+	// take a read lock; EXEC takes the write lock for the whole batch.
+	txMu sync.RWMutex
 }
 
 // New builds a server, opens the append-only file if enabled, and replays it.
@@ -70,6 +76,7 @@ func New(cfg config.Config, logger *slog.Logger, level *slog.LevelVar) (*Server,
 		logger:  logger,
 		level:   level,
 		data:    store.New(),
+		pubsub:  newPubsubRegistry(),
 		clients: make(map[int64]*client),
 		started: time.Now(),
 	}
@@ -215,6 +222,7 @@ func (s *Server) serveClient(c *client) {
 		s.clientsMu.Lock()
 		delete(s.clients, c.id)
 		s.clientsMu.Unlock()
+		s.pubsub.removeAll(c)
 		s.wg.Done()
 		s.logger.Debug("client disconnected", "id", c.id, "addr", c.addr)
 	}()
@@ -249,18 +257,13 @@ func (s *Server) serveClient(c *client) {
 
 		res, err := s.execute(c, args)
 		if err != nil {
-			if werr := c.wr.WriteError(err.Error()); werr != nil {
+			if werr := c.sendReply(errorReply(err.Error())); werr != nil {
 				return
 			}
 		} else if res.reply != nil {
-			if werr := writeReply(c.wr, res.reply); werr != nil {
+			if werr := c.sendReply(res.reply); werr != nil {
 				return
 			}
-		}
-
-		_ = c.conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
-		if ferr := c.wr.Flush(); ferr != nil {
-			return
 		}
 		if res.close {
 			return

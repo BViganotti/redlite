@@ -145,7 +145,7 @@ func readValue(r *bufio.Reader) (any, error) {
 			return nil, err
 		}
 		return buf[:size], nil
-	case '*':
+	case '*', '>':
 		count, err := strconv.Atoi(string(line[1:]))
 		if err != nil {
 			return nil, err

@@ -48,6 +48,9 @@ func (s *Store) HSet(key string, pairs []KeyValue) (int64, error) {
 		}
 		hv.fields[pair.Key] = clone(pair.Value)
 	}
+	if len(pairs) > 0 {
+		s.stampKey(key)
+	}
 	return added, nil
 }
 
@@ -65,6 +68,7 @@ func (s *Store) HSetNX(key, field string, value []byte) (bool, error) {
 		return false, nil
 	}
 	hv.fields[field] = clone(value)
+	s.stampKey(key)
 	return true, nil
 }
 
@@ -112,6 +116,8 @@ func (s *Store) HDel(key string, fields []string) (int64, error) {
 	}
 	if len(hv.fields) == 0 {
 		delete(s.data, key)
+	} else if removed > 0 {
+		s.stampKey(key)
 	}
 	return removed, nil
 }
@@ -232,6 +238,7 @@ func (s *Store) HIncrBy(key, field string, delta int64) (int64, error) {
 
 	next := current + delta
 	hv.fields[field] = strconv.AppendInt(nil, next, 10)
+	s.stampKey(key)
 	return next, nil
 }
 

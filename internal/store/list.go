@@ -69,6 +69,7 @@ func (s *Store) push(key string, values [][]byte, front, create bool) (int64, er
 			lv.pushBack(clone(value))
 		}
 	}
+	s.stampKey(key)
 	return int64(lv.len()), nil
 }
 
@@ -118,6 +119,8 @@ func (s *Store) pop(key string, count int, front bool) ([][]byte, error) {
 	}
 	if lv.len() == 0 {
 		delete(s.data, key)
+	} else if len(out) > 0 {
+		s.stampKey(key)
 	}
 	return out, nil
 }
@@ -178,6 +181,7 @@ func (s *Store) LSet(key string, index int64, value []byte) error {
 		return ErrIndexOutOfRange
 	}
 	lv.set(pos, clone(value))
+	s.stampKey(key)
 	return nil
 }
 
@@ -229,6 +233,7 @@ func (s *Store) LTrim(key string, start, stop int64) error {
 		items = append(items, lv.at(i))
 	}
 	lv.reset(items)
+	s.stampKey(key)
 	return nil
 }
 
@@ -294,6 +299,7 @@ func (s *Store) LRem(key string, count int64, value []byte) (int64, error) {
 		return removed, nil
 	}
 	lv.reset(kept)
+	s.stampKey(key)
 	return removed, nil
 }
 

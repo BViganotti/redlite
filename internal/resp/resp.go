@@ -348,6 +348,14 @@ func (w *Writer) WriteArrayHeader(n int) error {
 	return w.writeString("*" + strconv.Itoa(n) + "\r\n")
 }
 
+// WritePushHeader writes a RESP3 push header, or an array header in RESP2.
+func (w *Writer) WritePushHeader(n int) error {
+	if w.proto >= 3 {
+		return w.writeString(">" + strconv.Itoa(n) + "\r\n")
+	}
+	return w.WriteArrayHeader(n)
+}
+
 // WriteMapHeader writes a map header in RESP3 or a flat array header in RESP2.
 func (w *Writer) WriteMapHeader(pairs int) error {
 	if w.proto >= 3 {

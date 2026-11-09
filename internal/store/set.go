@@ -41,6 +41,9 @@ func (s *Store) SAdd(key string, members [][]byte) (int64, error) {
 		}
 		sv.members[string(member)] = struct{}{}
 	}
+	if added > 0 {
+		s.stampKey(key)
+	}
 	return added, nil
 }
 
@@ -66,6 +69,8 @@ func (s *Store) SRem(key string, members [][]byte) (int64, error) {
 	}
 	if len(sv.members) == 0 {
 		delete(s.data, key)
+	} else if removed > 0 {
+		s.stampKey(key)
 	}
 	return removed, nil
 }
@@ -237,6 +242,8 @@ func (s *Store) SPop(key string, count int) ([][]byte, error) {
 	}
 	if len(sv.members) == 0 {
 		delete(s.data, key)
+	} else if len(out) > 0 {
+		s.stampKey(key)
 	}
 	return out, nil
 }

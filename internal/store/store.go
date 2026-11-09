@@ -31,6 +31,7 @@ var (
 type entry struct {
 	value    value
 	expireAt int64 // unix milliseconds; 0 means no expiry
+	version  uint64
 }
 
 // Stats are counters that INFO reports.
@@ -50,6 +51,9 @@ type Store struct {
 	misses  atomic.Uint64
 	expired atomic.Uint64
 	sets    atomic.Uint64
+
+	nextVersion atomic.Uint64
+	epoch       atomic.Uint64
 
 	now      func() int64
 	stop     chan struct{}
@@ -162,6 +166,34 @@ func (s *Store) lookupWrite(key string, now int64) (*entry, bool) {
 	return e, true
 }
 
+// WatchState is what WATCH records for a key. Two states compare equal only
+// when the key's existence, version and flush epoch are unchanged.
+type WatchState struct {
+	Version uint64
+	Exists  bool
+	Epoch   uint64
+}
+
+// Watch returns the current state of a key for optimistic locking.
+func (s *Store) Watch(key string) WatchState {
+	now := s.now()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e, ok := s.lookupRead(key, now)
+	if !ok {
+		return WatchState{Epoch: s.epoch.Load()}
+	}
+	return WatchState{Version: e.version, Exists: true, Epoch: s.epoch.Load()}
+}
+
+// stampKey assigns a fresh version to a key after a modification. The caller
+// must hold the write lock.
+func (s *Store) stampKey(key string) {
+	if e, ok := s.data[key]; ok {
+		e.version = s.nextVersion.Add(1)
+	}
+}
+
 // Get returns a copy of the string stored at key.
 func (s *Store) Get(key string) ([]byte, bool, error) {
 	now := s.now()
@@ -242,6 +274,7 @@ func (s *Store) Set(key string, value []byte, opts SetOptions) (SetResult, error
 		value:    &stringValue{data: clone(value)},
 		expireAt: expireAt,
 	}
+	s.stampKey(key)
 	return res, nil
 }
 
@@ -258,6 +291,7 @@ func (s *Store) SetMany(pairs []KeyValue) {
 	defer s.mu.Unlock()
 	for _, pair := range pairs {
 		s.data[pair.Key] = &entry{value: &stringValue{data: clone(pair.Value)}}
+		s.stampKey(pair.Key)
 	}
 	s.sets.Add(uint64(len(pairs)))
 }
@@ -274,6 +308,7 @@ func (s *Store) SetManyNX(pairs []KeyValue) bool {
 	}
 	for _, pair := range pairs {
 		s.data[pair.Key] = &entry{value: &stringValue{data: clone(pair.Value)}}
+		s.stampKey(pair.Key)
 	}
 	s.sets.Add(uint64(len(pairs)))
 	return true
@@ -337,6 +372,7 @@ func (s *Store) Append(key string, suffix []byte) (int, error) {
 	e, ok := s.lookupWrite(key, now)
 	if !ok {
 		s.data[key] = &entry{value: &stringValue{data: clone(suffix)}}
+		s.stampKey(key)
 		s.sets.Add(1)
 		return len(suffix), nil
 	}
@@ -345,6 +381,7 @@ func (s *Store) Append(key string, suffix []byte) (int, error) {
 		return 0, ErrWrongType
 	}
 	sv.data = append(sv.data, suffix...)
+	s.stampKey(key)
 	return len(sv.data), nil
 }
 
@@ -396,6 +433,7 @@ func (s *Store) IncrBy(key string, delta int64) (int64, error) {
 		s.data[key] = &entry{value: &stringValue{data: strconv.AppendInt(nil, next, 10)}}
 		s.sets.Add(1)
 	}
+	s.stampKey(key)
 	return next, nil
 }
 
@@ -446,6 +484,7 @@ func (s *Store) Expire(key string, expireAt int64, mode ExpireMode) bool {
 		return true
 	}
 	e.expireAt = expireAt
+	s.stampKey(key)
 	return true
 }
 
@@ -500,6 +539,7 @@ func (s *Store) Persist(key string) bool {
 		return false
 	}
 	e.expireAt = 0
+	s.stampKey(key)
 	return true
 }
 
@@ -596,6 +636,7 @@ func (s *Store) Rename(src, dst string) bool {
 	}
 	delete(s.data, src)
 	s.data[dst] = e
+	s.stampKey(dst)
 	return true
 }
 
@@ -614,6 +655,7 @@ func (s *Store) RenameNX(src, dst string) bool {
 	}
 	delete(s.data, src)
 	s.data[dst] = e
+	s.stampKey(dst)
 	return true
 }
 
@@ -645,6 +687,7 @@ func (s *Store) KeyCounts() (keys, expiring int64) {
 func (s *Store) Flush() {
 	s.mu.Lock()
 	s.data = make(map[string]*entry)
+	s.epoch.Add(1)
 	s.mu.Unlock()
 }
 

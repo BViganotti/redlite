@@ -156,6 +156,34 @@ func TestWriterNulls(t *testing.T) {
 	}
 }
 
+func TestWritePushHeader(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+	if err := w.WritePushHeader(2); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := buf.String(), "*2\r\n"; got != want {
+		t.Errorf("RESP2 push header = %q, want %q", got, want)
+	}
+
+	buf.Reset()
+	if err := w.SetProto(3); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WritePushHeader(2); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := buf.String(), ">2\r\n"; got != want {
+		t.Errorf("RESP3 push header = %q, want %q", got, want)
+	}
+}
+
 func TestWriterMapHeader(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewWriter(&buf)

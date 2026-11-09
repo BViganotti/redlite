@@ -157,6 +157,8 @@ func (s *Store) ZAdd(key string, opts ZAddOptions, pairs []ScoreMember, incr boo
 
 	if created && zv.list.length == 0 {
 		delete(s.data, key)
+	} else if res.Changed > 0 {
+		s.stampKey(key)
 	}
 	return res, nil
 }
@@ -187,6 +189,8 @@ func (s *Store) ZRem(key string, members []string) (int64, error) {
 	}
 	if len(zv.dict) == 0 {
 		delete(s.data, key)
+	} else if removed > 0 {
+		s.stampKey(key)
 	}
 	return removed, nil
 }
@@ -412,6 +416,8 @@ func (s *Store) ZRemRangeByRank(key string, start, stop int64) (int64, error) {
 	}
 	if len(zv.dict) == 0 {
 		delete(s.data, key)
+	} else if len(members) > 0 {
+		s.stampKey(key)
 	}
 	return int64(len(members)), nil
 }
@@ -443,6 +449,8 @@ func (s *Store) ZRemRangeByScore(key string, r ScoreRange) (int64, error) {
 	}
 	if len(zv.dict) == 0 {
 		delete(s.data, key)
+	} else if len(members) > 0 {
+		s.stampKey(key)
 	}
 	return int64(len(members)), nil
 }

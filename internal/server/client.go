@@ -3,11 +3,13 @@ package server
 import (
 	"fmt"
 	"net"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/BViganotti/redlite/internal/resp"
+	"github.com/BViganotti/redlite/internal/store"
 )
 
 // client is one connected peer. Each client is served by exactly one
@@ -28,6 +30,15 @@ type client struct {
 	mu      sync.Mutex
 	cname   string
 	lastCmd string
+
+	multi   bool
+	dirty   bool
+	queued  [][][]byte
+	watched map[string]store.WatchState
+
+	writeMu sync.Mutex
+	subs    map[string]struct{}
+	psubs   map[string]struct{}
 }
 
 func newClient(srv *Server, conn net.Conn, id int64) *client {
@@ -101,6 +112,89 @@ func (c *client) localAddr() string {
 		return ""
 	}
 	return c.conn.LocalAddr().String()
+}
+
+// resetMulti clears transaction state. Watches are dropped as well, matching
+// EXEC and DISCARD.
+func (c *client) resetMulti() {
+	c.multi = false
+	c.dirty = false
+	c.queued = nil
+	c.watched = nil
+}
+
+// sendReply writes one reply under the connection's write lock. Pushes from
+// PUBLISH arrive on other goroutines, so every write must take this lock.
+func (c *client) sendReply(value any) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if c.conn != nil {
+		_ = c.conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
+	}
+	if err := writeReply(c.wr, value); err != nil {
+		return err
+	}
+	return c.wr.Flush()
+}
+
+// push writes an out-of-band message to a subscriber.
+func (c *client) push(value any) error {
+	return c.sendReply(value)
+}
+
+func (c *client) subscribed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.subs)+len(c.psubs) > 0
+}
+
+func (c *client) subCounts() (channels, patterns int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.subs), len(c.psubs)
+}
+
+func (c *client) addSubscription(pattern bool, name string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if pattern {
+		if c.psubs == nil {
+			c.psubs = make(map[string]struct{})
+		}
+		c.psubs[name] = struct{}{}
+	} else {
+		if c.subs == nil {
+			c.subs = make(map[string]struct{})
+		}
+		c.subs[name] = struct{}{}
+	}
+	return len(c.subs) + len(c.psubs)
+}
+
+func (c *client) removeSubscription(pattern bool, name string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if pattern {
+		delete(c.psubs, name)
+	} else {
+		delete(c.subs, name)
+	}
+	return len(c.subs) + len(c.psubs)
+}
+
+func (c *client) subscriptionNames(pattern bool) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	source := c.subs
+	if pattern {
+		source = c.psubs
+	}
+	out := make([]string, 0, len(source))
+	for name := range source {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (c *client) setProto(version int) error {

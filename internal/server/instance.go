@@ -194,13 +194,16 @@ func (s *Server) clientList() string {
 }
 
 func (c *client) infoLine() string {
+	channels, patterns := c.subCounts()
 	return fmt.Sprintf(
-		"id=%d addr=%s laddr=%s fd=-1 name=%s age=%d idle=0 flags=N db=0 sub=0 psub=0 ssub=0 multi=-1 qbuf=0 qbuf-free=0 argv-mem=0 obl=0 oll=0 omem=0 tot-mem=0 events=r cmd=%s user=default redir=-1 resp=%d",
+		"id=%d addr=%s laddr=%s fd=-1 name=%s age=%d idle=0 flags=N db=0 sub=%d psub=%d ssub=0 multi=-1 qbuf=0 qbuf-free=0 argv-mem=0 obl=0 oll=0 omem=0 tot-mem=0 events=r cmd=%s user=default redir=-1 resp=%d",
 		c.id,
 		c.addr,
 		c.localAddr(),
 		c.name(),
 		int64(time.Since(c.created).Seconds()),
+		channels,
+		patterns,
 		c.lastCommand(),
 		c.protoNum(),
 	)
