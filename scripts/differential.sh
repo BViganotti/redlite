@@ -144,6 +144,17 @@ check raw EXISTS s
 check raw SET bad notanumber
 check raw INCR bad
 
+# Extended strings
+check raw SET gs "This is a string"
+check raw GETRANGE gs 0 3
+check raw GETRANGE gs -3 -1
+check raw SETRANGE rs 5 hello
+check raw STRLEN rs
+check raw SETRANGE rs 0 HELLO
+check raw GETRANGE rs 0 4
+check raw INCRBYFLOAT fl 10
+check raw INCRBYFLOAT fl 5
+
 # Hashes
 check raw HSET h f1 v1 f2 v2
 check raw HGET h f1
