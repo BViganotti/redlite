@@ -37,7 +37,7 @@ duplicate effort.
 
 ## v0.4 — durability and replication
 
-- [ ] RDB-style snapshots (`SAVE`, `BGSAVE`) with a versioned file format
+- [x] Snapshots (`SAVE`, `BGSAVE`) with a versioned, checksummed file format
 - [ ] Background AOF rewrite that does not block writers
 - [ ] `REPLICAOF` with full resync and command propagation
 - [ ] Replication backlog and partial resync

@@ -77,7 +77,7 @@ docker compose up --build
 
 **Pub/Sub**: `SUBSCRIBE` `UNSUBSCRIBE` `PSUBSCRIBE` `PUNSUBSCRIBE` `PUBLISH` `PUBSUB`
 
-**Introspection**: `CLIENT` `COMMAND` `CONFIG` `INFO` `TIME` `LASTSAVE` `SHUTDOWN` `BGREWRITEAOF`
+**Introspection**: `CLIENT` `COMMAND` `CONFIG` `INFO` `TIME` `LASTSAVE` `SHUTDOWN` `BGREWRITEAOF` `SAVE` `BGSAVE`
 
 **Strings**: `GET` `SET` `SETNX` `SETEX` `PSETEX` `GETSET` `GETDEL` `GETEX`
 `MGET` `MSET` `MSETNX` `APPEND` `STRLEN` `INCR` `DECR` `INCRBY` `DECRBY`
@@ -101,7 +101,7 @@ docker compose up --build
 `RENAMENX` `EXPIRE` `PEXPIRE` `EXPIREAT` `PEXPIREAT` `TTL` `PTTL` `PERSIST`
 `EXPIRETIME` `PEXPIRETIME` `TOUCH` `DBSIZE` `FLUSHDB` `FLUSHALL`
 
-That is 122 commands. Every value carries an explicit type, so touching a hash
+That is 124 commands. Every value carries an explicit type, so touching a hash
 with `GET` or a string with `HGET` returns `WRONGTYPE` instead of guessing.
 See [docs/compatibility.md](docs/compatibility.md) for the differences you will
 hit and [ROADMAP.md](ROADMAP.md) for what comes next.
@@ -116,6 +116,9 @@ hit and [ROADMAP.md](ROADMAP.md) for what comes next.
 - **Append-only file** in RESP format. `appendfsync` supports `always`,
   `everysec` and `no`. A partial command at the tail of the file — the normal
   result of a crash — is truncated on load instead of failing startup.
+- **Snapshots**: `SAVE` and `BGSAVE` write a versioned, checksummed file with a
+  temporary file and an atomic rename. A corrupt snapshot refuses to load
+  instead of starting empty.
 - **Lazy and active expiration**: reads treat an expired key as missing; a
   background sampler reaps expired keys the way Redis does.
 - **Deterministic recovery**: relative expiries are rewritten to absolute
@@ -164,7 +167,8 @@ pass a `Logger`.
 | --- | --- | --- |
 | `--bind` | `127.0.0.1` | Address to bind. Loopback by default because there is no auth yet. |
 | `--port` | `6379` | TCP port. `0` picks an ephemeral port. |
-| `--dir` | `.` | Directory holding the append-only file. |
+| `--dir` | `.` | Directory holding the append-only file and snapshots. |
+| `--dbfilename` | `dump.rdb` | Snapshot file name inside `--dir`. |
 | `--appendonly` | `false` | Enable persistence. |
 | `--appendfsync` | `everysec` | `always`, `everysec` or `no`. |
 | `--loglevel` | `info` | `debug`, `info`, `warn`, `error`. |

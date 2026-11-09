@@ -136,6 +136,15 @@ runs. It is a debugging command, exactly as in Redis.
 
 - The append-only file is a sequence of RESP commands, which is the same shape
   Redis uses, but redlite does not read Redis' RDB files.
+- Snapshots use a redlite-specific format: an 8-byte magic header, a format
+  version, the entries, and a CRC-32 checksum. They cannot be opened by Redis,
+  and real RDB files cannot be loaded here.
+- `SAVE` writes synchronously; `BGSAVE` copies the keyspace and writes in the
+  background. Both use a temporary file, fsync and an atomic rename.
+- On startup, if `appendonly` is enabled the AOF is authoritative. Otherwise
+  `dir/dbfilename` is loaded when present, and a corrupt snapshot refuses to
+  start rather than silently losing data.
+- `SHUTDOWN SAVE` writes a snapshot before stopping.
 - A rewrite emits typed commands: `SET`/`PXAT` for strings, `HSET` for hashes,
   `RPUSH` for lists, `SADD` for sets and `ZADD` for sorted sets, in chunks of
   128 elements. Every type round-trips through a restart.
