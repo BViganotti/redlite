@@ -76,9 +76,11 @@ func cmdExec(c *client, args [][]byte) (result, error) {
 
 	aof := c.srv.aof
 	writeAOF := aof != nil && !c.srv.replaying.Load()
+	shouldPropagate := !c.srv.replaying.Load()
 
 	replies := make(arrayReply, 0, len(queued))
 	wroteMulti := false
+	replicatedMulti := false
 	closeAfter := false
 
 	for _, command := range queued {
@@ -91,25 +93,36 @@ func cmdExec(c *client, args [][]byte) (result, error) {
 		if res.close {
 			closeAfter = true
 		}
-		if !res.mutated || !writeAOF {
+		if !res.mutated {
 			continue
 		}
 
-		if !wroteMulti {
-			if aerr := aof.Append([][]byte{[]byte("MULTI")}); aerr != nil {
-				c.srv.aofErrors.Add(1)
-				c.srv.logger.Error("append-only file write failed", "err", aerr)
-			} else {
-				wroteMulti = true
-			}
-		}
 		payload := res.rewrite
 		if payload == nil {
 			payload = command
 		}
-		if aerr := aof.Append(payload); aerr != nil {
-			c.srv.aofErrors.Add(1)
-			c.srv.logger.Error("append-only file write failed", "err", aerr)
+
+		if writeAOF {
+			if !wroteMulti {
+				if aerr := aof.Append([][]byte{[]byte("MULTI")}); aerr != nil {
+					c.srv.aofErrors.Add(1)
+					c.srv.logger.Error("append-only file write failed", "err", aerr)
+				} else {
+					wroteMulti = true
+				}
+			}
+			if aerr := aof.Append(payload); aerr != nil {
+				c.srv.aofErrors.Add(1)
+				c.srv.logger.Error("append-only file write failed", "err", aerr)
+			}
+		}
+
+		if shouldPropagate {
+			if !replicatedMulti {
+				c.srv.propagate([][]byte{[]byte("MULTI")})
+				replicatedMulti = true
+			}
+			c.srv.propagate(payload)
 		}
 	}
 
@@ -118,6 +131,9 @@ func cmdExec(c *client, args [][]byte) (result, error) {
 			c.srv.aofErrors.Add(1)
 			c.srv.logger.Error("append-only file write failed", "err", aerr)
 		}
+	}
+	if replicatedMulti {
+		c.srv.propagate([][]byte{[]byte("EXEC")})
 	}
 
 	return result{reply: replies, close: closeAfter}, nil

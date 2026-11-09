@@ -25,7 +25,7 @@ func (s *Server) info(requested ...string) string {
 		"memory":      infoMemory(),
 		"persistence": s.infoPersistence(),
 		"stats":       s.infoStats(),
-		"replication": infoReplication(),
+		"replication": s.infoReplication(),
 		"keyspace":    s.infoKeyspace(),
 	}
 	order := []string{"server", "clients", "memory", "persistence", "stats", "replication", "keyspace"}
@@ -126,12 +126,24 @@ func (s *Server) infoStats() string {
 	return b.String()
 }
 
-func infoReplication() string {
+func (s *Server) infoReplication() string {
 	var b strings.Builder
 	b.WriteString("# Replication\r\n")
-	writeInfoField(&b, "role", "master")
-	writeInfoField(&b, "connected_slaves", "0")
-	writeInfoField(&b, "master_replid", "0000000000000000000000000000000000000000")
+	if host, port, ok := s.replicationTarget(); ok {
+		writeInfoField(&b, "role", "slave")
+		writeInfoField(&b, "master_host", host)
+		writeInfoField(&b, "master_port", port)
+		status := "down"
+		if s.replUp.Load() {
+			status = "up"
+		}
+		writeInfoField(&b, "master_link_status", status)
+		writeInfoField(&b, "slave_read_only", "1")
+	} else {
+		writeInfoField(&b, "role", "master")
+		writeInfoField(&b, "connected_slaves", strconv.Itoa(s.replicaCount()))
+	}
+	writeInfoField(&b, "master_replid", s.replID)
 	writeInfoField(&b, "master_repl_offset", "0")
 	return b.String()
 }

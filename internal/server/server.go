@@ -54,6 +54,17 @@ type Server struct {
 	// txMu makes EXEC atomic with respect to other clients. Normal commands
 	// take a read lock; EXEC takes the write lock for the whole batch.
 	txMu sync.RWMutex
+
+	replicasMu sync.RWMutex
+	replicas   map[*client]*replicaLink
+	replID     string
+
+	replMu      sync.Mutex
+	replCancel  chan struct{}
+	replHost    string
+	replPort    string
+	replUp      atomic.Bool
+	replicaMode atomic.Bool
 }
 
 // New builds a server, opens the append-only file if enabled, and replays it.
@@ -74,13 +85,15 @@ func New(cfg config.Config, logger *slog.Logger, level *slog.LevelVar) (*Server,
 	}
 
 	srv := &Server{
-		cfg:     cfg,
-		logger:  logger,
-		level:   level,
-		data:    store.New(),
-		pubsub:  newPubsubRegistry(),
-		clients: make(map[int64]*client),
-		started: time.Now(),
+		cfg:      cfg,
+		logger:   logger,
+		level:    level,
+		data:     store.New(),
+		pubsub:   newPubsubRegistry(),
+		clients:  make(map[int64]*client),
+		replicas: make(map[*client]*replicaLink),
+		replID:   newReplicationID(),
+		started:  time.Now(),
 	}
 	srv.maxClients.Store(int64(cfg.MaxClients))
 	srv.lastSave.Store(srv.started.Unix())
@@ -229,6 +242,7 @@ func (s *Server) serveClient(c *client) {
 		s.clientsMu.Lock()
 		delete(s.clients, c.id)
 		s.clientsMu.Unlock()
+		s.removeReplica(c)
 		s.pubsub.removeAll(c)
 		s.wg.Done()
 		s.logger.Debug("client disconnected", "id", c.id, "addr", c.addr)
@@ -299,6 +313,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 		// Wake clients blocked in BLPOP/BRPOP/BLMOVE so shutdown cannot hang.
 		s.data.WakeAll()
+		s.stopReplication()
 
 		done := make(chan struct{})
 		go func() {

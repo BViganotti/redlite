@@ -31,11 +31,12 @@ type client struct {
 	cname   string
 	lastCmd string
 
-	multi     bool
-	dirty     bool
-	queued    [][][]byte
-	watched   map[string]store.WatchState
-	executing bool
+	multi      bool
+	dirty      bool
+	queued     [][][]byte
+	watched    map[string]store.WatchState
+	executing  bool
+	fromMaster bool
 
 	writeMu sync.Mutex
 	subs    map[string]struct{}

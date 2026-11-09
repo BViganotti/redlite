@@ -136,6 +136,7 @@ const (
 	flagAdmin
 	flagFast
 	flagBlocking
+	flagNoGate
 )
 
 func (f cmdFlag) names() []any {
@@ -201,13 +202,22 @@ func arityOK(arity, argc int) bool {
 func (s *Server) execute(c *client, args [][]byte) (result, error) {
 	name := strings.ToUpper(string(args[0]))
 
+	// A replica rejects writes before they can be queued, so a transaction
+	// stays clean. EXEC itself is allowed and will run an empty batch.
+	if s.replicaMode.Load() && !c.fromMaster {
+		if cmd, ok := lookupCommand(name); ok && cmd.flags&flagWrite != 0 &&
+			name != "REPLICAOF" && name != "EXEC" && name != "DISCARD" {
+			return result{}, errors.New("READONLY You can't write against a read only replica.")
+		}
+	}
+
 	if c.multi && name != "EXEC" && name != "DISCARD" && name != "MULTI" && name != "WATCH" && name != "QUIT" {
 		return s.queueCommand(c, args)
 	}
 
 	// Blocking commands take the transaction gate per attempt, not while
-	// waiting, so a blocked client never holds up another client's EXEC.
-	if cmd, ok := lookupCommand(name); ok && cmd.flags&flagBlocking != 0 {
+	// waiting. PSYNC takes the write side itself to ship a consistent snapshot.
+	if cmd, ok := lookupCommand(name); ok && (cmd.flags&flagBlocking != 0 || cmd.flags&flagNoGate != 0) {
 		return s.executeLocked(c, args, true)
 	}
 
@@ -272,16 +282,19 @@ func (s *Server) executeLocked(c *client, args [][]byte, propagate bool) (result
 		return result{}, err
 	}
 
-	if propagate && res.mutated && !s.replaying.Load() && s.aof != nil {
+	if propagate && res.mutated && !s.replaying.Load() {
 		payload := res.rewrite
 		if payload == nil {
 			payload = args
 		}
-		if aerr := s.aof.Append(payload); aerr != nil {
-			s.aofErrors.Add(1)
-			s.logger.Error("append-only file write failed", "err", aerr)
-			return result{}, fmt.Errorf("MISCONF Errors writing to the append-only file: %v", aerr)
+		if s.aof != nil {
+			if aerr := s.aof.Append(payload); aerr != nil {
+				s.aofErrors.Add(1)
+				s.logger.Error("append-only file write failed", "err", aerr)
+				return result{}, fmt.Errorf("MISCONF Errors writing to the append-only file: %v", aerr)
+			}
 		}
+		s.propagate(payload)
 	}
 	return res, nil
 }
