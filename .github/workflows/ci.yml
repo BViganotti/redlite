@@ -49,3 +49,23 @@ jobs:
           context: .
           push: false
           tags: redlite:ci
+
+  differential:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+          cache: false
+
+      - name: install redis
+        run: sudo apt-get update && sudo apt-get install -y redis-server
+
+      - name: build
+        run: go build -trimpath -o bin/redlite ./cmd/redlite
+
+      - name: compare against real Redis
+        run: ./scripts/differential.sh

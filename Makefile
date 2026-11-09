@@ -2,7 +2,7 @@ BINARY  := bin/redlite
 COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/BViganotti/redlite/internal/version.Commit=$(COMMIT)
 
-.PHONY: all build test race vet fmt fmtcheck cover run docker clean
+.PHONY: all build test race vet fmt fmtcheck cover run docker differential clean
 
 all: build
 
@@ -33,6 +33,9 @@ run: build
 
 docker:
 	docker build -t redlite:dev .
+
+differential: build
+	./scripts/differential.sh
 
 clean:
 	rm -rf bin coverage.out
