@@ -30,6 +30,29 @@ func newTestServer(t *testing.T, mutate func(*config.Config)) *Server {
 	return startServer(t, cfg)
 }
 
+// persistenceConfig returns a config that writes an AOF into dir.
+func persistenceConfig(t *testing.T, dir string) config.Config {
+	t.Helper()
+	cfg := config.Default()
+	cfg.Bind = "127.0.0.1"
+	cfg.Port = 0
+	cfg.Dir = dir
+	cfg.AppendOnly = true
+	cfg.AppendFsync = "always"
+	cfg.LogLevel = "error"
+	return cfg
+}
+
+// shutdownServer stops srv and fails the test if the drain does not finish.
+func shutdownServer(t *testing.T, srv *Server) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+}
+
 func startServer(t *testing.T, cfg config.Config) *Server {
 	t.Helper()
 	level := new(slog.LevelVar)

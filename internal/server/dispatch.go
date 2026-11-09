@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/BViganotti/redlite/internal/resp"
+	"github.com/BViganotti/redlite/internal/store"
 )
 
 // Reply values. Handlers return one of these and the connection loop encodes
@@ -170,6 +171,14 @@ var (
 	errSyntax  = errors.New("ERR syntax error")
 	errInteger = errors.New("ERR value is not an integer or out of range")
 )
+
+func isWrongType(err error) bool  { return errors.Is(err, store.ErrWrongType) }
+func isNotInteger(err error) bool { return errors.Is(err, store.ErrNotInteger) }
+func isOverflow(err error) bool   { return errors.Is(err, store.ErrOverflow) }
+
+func overflowError() error {
+	return errors.New("ERR increment or decrement would overflow")
+}
 
 // parseInt parses a 64-bit integer argument.
 func parseInt(b []byte) (int64, error) {

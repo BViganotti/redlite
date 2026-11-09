@@ -349,10 +349,10 @@ func incrBy(c *client, key []byte, delta int64) (result, error) {
 	n, err := c.srv.data.IncrBy(string(key), delta)
 	if err != nil {
 		switch {
-		case errors.Is(err, store.ErrNotInteger):
+		case isNotInteger(err):
 			return result{}, errInteger
-		case errors.Is(err, store.ErrOverflow):
-			return result{}, fmt.Errorf("ERR increment or decrement would overflow")
+		case isOverflow(err):
+			return result{}, overflowError()
 		}
 		return result{}, err
 	}
