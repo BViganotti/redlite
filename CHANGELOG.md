@@ -4,6 +4,21 @@ All notable changes to redlite are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/).
 
+## [0.7.0] - 2026-11-09
+
+### Added
+
+- Authentication: `--requirepass`, `AUTH` (one and two argument forms),
+  `HELLO ... AUTH`, `CONFIG SET requirepass`, and `NOAUTH` on every
+  unauthenticated command. `--masterauth` authenticates replicas.
+- Minimal ACL introspection: `ACL WHOAMI`, `ACL LIST`, `ACL CAT`.
+- `GETRANGE`, `SETRANGE`, `INCRBYFLOAT` and `COMMAND GETKEYS`.
+
+### Changed
+
+- `BGREWRITEAOF` is now asynchronous: appends during the rewrite are buffered
+  and folded into the new file, up to a 64 MiB bound.
+
 ## [0.6.0] - 2026-11-09
 
 ### Added

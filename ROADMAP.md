@@ -38,7 +38,7 @@ duplicate effort.
 ## v0.4 — durability and replication
 
 - [x] Snapshots (`SAVE`, `BGSAVE`) with a versioned, checksummed file format
-- [ ] Background AOF rewrite that does not block writers
+- [x] Background AOF rewrite that does not block writers
 - [x] `REPLICAOF` with full resync and command propagation
 - [ ] Replication backlog and partial resync
 - [x] `INFO replication` fields that reflect reality
@@ -69,15 +69,21 @@ duplicate effort.
 - [ ] Signed releases with `goreleaser`
 - [ ] Documentation site generated from `docs/`
 
+## Security
+
+- [x] Password authentication (`requirepass`, `AUTH`, `NOAUTH`)
+- [x] `HELLO ... AUTH` and `--masterauth` for replication
+- [x] Minimal ACL introspection (`ACL WHOAMI`, `ACL LIST`, `ACL CAT`)
+- [ ] Per-user ACLs with command categories and key patterns
+- [ ] TLS
+
 ## Good first issues
 
 These are intentionally small and self-contained:
 
-- Return `NOPROTO` for unsupported `HELLO` versions consistently
-- Add `GETRANGE` and `SETRANGE`
-- Add `INCRBYFLOAT` with Redis-compatible formatting
-- Accept `CLIENT KILL` with an `ID` filter
-- Report `aof_rewrite_in_progress` accurately in `INFO`
-- Make `CONFIG REWRITE` persist to a config file
-- Add `COMMAND GETKEYS`
 - Add `COPY` with the `REPLACE` option
+- Make `CONFIG REWRITE` persist to a config file
+- Accept `CLIENT KILL` with an `ID` filter
+- Add `HSTRLEN` and `LPOS`
+- Add `SINTERCARD`
+- Report command statistics in `INFO`

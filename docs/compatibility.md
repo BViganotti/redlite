@@ -87,16 +87,28 @@ runs. It is a debugging command, exactly as in Redis.
 ### Expiration
 
 - `TTL` rounds to the nearest second (`(ms + 500) / 1000`); `PTTL` is exact.
+- `INCRBYFLOAT` uses 64-bit-mantissa decimal arithmetic and formats like Redis
+  7's long double. Redis 8 prints more digits for some fractions (for example
+  `10.6` as `10.59999999999999964`).
 - `DEL` of a key that has expired but has not been reaped yet returns `0`, and
   `EXISTS`/`TYPE` behave as if it were gone.
 - `EXPIRE`, `PEXPIRE`, `EXPIREAT`, `PEXPIREAT` accept `NX`, `XX`, `GT`, `LT`.
 - Expired keys are reaped by a sampler every 100 ms, in addition to lazy checks
   on read.
 
-### Authentication and security
+### Authentication and ACLs
 
-- No password or ACL support. `HELLO ... AUTH` returns `WRONGPASS`.
-- The server binds to `127.0.0.1` by default. Do not expose it publicly.
+- `--requirepass` (or `CONFIG SET requirepass`) enables a single default user.
+  Unauthenticated connections get `NOAUTH` for every command except `AUTH`,
+  `HELLO` and `QUIT`.
+- `AUTH <password>` and `AUTH default <password>` are supported, with a
+  constant-time comparison. `HELLO ... AUTH default <password>` also works.
+- `ACL WHOAMI`, `ACL LIST` and `ACL CAT` are implemented. Per-user ACLs, command
+  categories and key patterns are not; there is one `default` user with full
+  access.
+- A replica connecting to a protected primary needs `--masterauth`.
+- The server binds to `127.0.0.1` by default and has no TLS. Put it behind a
+  proxy that terminates TLS if it must cross an untrusted network.
 
 ### Replication
 
@@ -163,8 +175,10 @@ runs. It is a debugging command, exactly as in Redis.
 - A rewrite emits typed commands: `SET`/`PXAT` for strings, `HSET` for hashes,
   `RPUSH` for lists, `SADD` for sets and `ZADD` for sorted sets, in chunks of
   128 elements. Every type round-trips through a restart.
-- `BGREWRITEAOF` is synchronous today; the reply string is the Redis-compatible
-  one so clients do not break.
+- `BGREWRITEAOF` runs in the background: appends during the rewrite are
+  buffered (up to 64 MiB) and folded into the new file before the atomic swap.
+  If the buffer overflows, the rewrite aborts and the old log stays
+  authoritative.
 - `appendfsync everysec` can lose up to one second of acknowledged writes on a
   hard crash. `always` does not.
 - There is no `SAVE`/`BGSAVE` yet.

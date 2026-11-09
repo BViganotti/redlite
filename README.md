@@ -73,6 +73,8 @@ docker compose up --build
 
 **Connection**: `PING` `ECHO` `QUIT` `SELECT` `HELLO`
 
+**Security**: `AUTH` `ACL`
+
 **Transactions**: `MULTI` `EXEC` `DISCARD` `WATCH` `UNWATCH`
 
 **Pub/Sub**: `SUBSCRIBE` `UNSUBSCRIBE` `PSUBSCRIBE` `PUNSUBSCRIBE` `PUBLISH` `PUBSUB`
@@ -80,7 +82,8 @@ docker compose up --build
 **Introspection**: `CLIENT` `COMMAND` `CONFIG` `INFO` `TIME` `LASTSAVE` `SHUTDOWN` `BGREWRITEAOF` `SAVE` `BGSAVE`
 
 **Strings**: `GET` `SET` `SETNX` `SETEX` `PSETEX` `GETSET` `GETDEL` `GETEX`
-`MGET` `MSET` `MSETNX` `APPEND` `STRLEN` `INCR` `DECR` `INCRBY` `DECRBY`
+`MGET` `MSET` `MSETNX` `APPEND` `STRLEN` `GETRANGE` `SETRANGE` `INCR` `DECR`
+`INCRBY` `DECRBY` `INCRBYFLOAT`
 
 **Hashes**: `HSET` `HSETNX` `HMSET` `HGET` `HMGET` `HDEL` `HLEN` `HEXISTS`
 `HKEYS` `HVALS` `HGETALL` `HINCRBY` `HSCAN`
@@ -103,7 +106,7 @@ docker compose up --build
 `RENAMENX` `EXPIRE` `PEXPIRE` `EXPIREAT` `PEXPIREAT` `TTL` `PTTL` `PERSIST`
 `EXPIRETIME` `PEXPIRETIME` `TOUCH` `DBSIZE` `FLUSHDB` `FLUSHALL`
 
-That is 128 commands. Every value carries an explicit type, so touching a hash
+That is 133 commands. Every value carries an explicit type, so touching a hash
 with `GET` or a string with `HGET` returns `WRONGTYPE` instead of guessing.
 See [docs/compatibility.md](docs/compatibility.md) for the differences you will
 hit and [ROADMAP.md](ROADMAP.md) for what comes next.
@@ -141,6 +144,10 @@ hit and [ROADMAP.md](ROADMAP.md) for what comes next.
 - **Replication** streams a snapshot under the transaction gate and then the
   command stream, so no write can slip between the two. Replicas apply
   transactions as a unit and reject client writes.
+- **Authentication** uses `requirepass` with a constant-time comparison; every
+  command except `AUTH`, `HELLO` and `QUIT` is guarded by `NOAUTH`.
+- **Background AOF rewrite** buffers appends during the rewrite and folds them
+  into the new file before the atomic swap.
 - **Sorted sets use a skiplist** with spans, like Redis. Inserts, deletes and
   rank queries are O(log n), and the structure is checked against a naive model
   over thousands of randomised operations.
@@ -179,6 +186,8 @@ pass a `Logger`.
 | `--loglevel` | `info` | `debug`, `info`, `warn`, `error`. |
 | `--maxclients` | `10000` | Concurrent connection limit. |
 | `--timeout` | `0` | Idle client timeout; `0` disables. |
+| `--requirepass` | none | Password clients must send with `AUTH`. |
+| `--masterauth` | none | Password a replica sends to its primary. |
 | `--version` | | Print the version and exit. |
 
 At runtime:
@@ -188,6 +197,22 @@ $ redis-cli CONFIG GET maxclients
 $ redis-cli CONFIG SET maxclients 2048
 $ redis-cli CONFIG SET appendfsync always
 ```
+
+## Authentication
+
+Set a password and every connection must authenticate before it can run a
+command:
+
+```console
+$ ./bin/redlite --requirepass secret
+$ redis-cli -a secret PING
+PONG
+```
+
+`CONFIG SET requirepass <value>` changes it at runtime; an empty value disables
+authentication. A replica connecting to a protected primary needs
+`--masterauth <password>`. There is one user, `default`; `ACL WHOAMI`,
+`ACL LIST` and `ACL CAT` are implemented, per-user ACLs are not.
 
 ## Replication
 
