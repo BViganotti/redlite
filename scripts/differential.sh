@@ -37,7 +37,8 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 start() {
-  redis-server --port "$REDIS_PORT" --save '' --appendonly no --daemonize yes >/dev/null
+  redis-server --port "$REDIS_PORT" --save '' --appendonly no \
+    --dir "$WORKDIR" --dbfilename redis-dump.rdb --daemonize yes >/dev/null
   "$BIN" --port "$REDLITE_PORT" --dir "$WORKDIR" --loglevel error &
   REDLITE_PID=$!
 
