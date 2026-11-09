@@ -67,5 +67,8 @@ jobs:
       - name: build
         run: go build -trimpath -o bin/redlite ./cmd/redlite
 
+      - name: RDB compatibility
+        run: go test ./internal/store -run 'RDB' -timeout 180s
+
       - name: compare against real Redis
         run: ./scripts/differential.sh

@@ -246,6 +246,51 @@ check sort LRANGE ml2 0 -1
 check raw SAVE
 check raw BGSAVE
 
+# Bitmaps
+check raw SETBIT bm 7 1
+check raw SETBIT bm 0 1
+check raw GETBIT bm 7
+check raw GETBIT bm 6
+check raw BITCOUNT bm
+check raw BITCOUNT bm 0 0 BIT
+check raw BITPOS bm 1
+check raw BITOP NOT bmnot bm
+check raw GET bmnot
+
+# HyperLogLog
+check raw PFADD hll a b c
+check raw PFADD hll a
+check raw PFCOUNT hll
+check raw PFADD hll2 c d
+check raw PFCOUNT hll hll2
+check raw PFMERGE merged hll hll2
+check raw PFCOUNT merged
+
+# Sorted-set algebra
+check raw ZADD za 1 a 2 b
+check raw ZADD zb 10 b 20 c
+check raw ZUNION 2 za zb
+check raw ZUNION 2 za zb WITHSCORES
+check raw ZUNION 2 za zb WEIGHTS 1 2 WITHSCORES
+check raw ZINTER 2 za zb
+check raw ZDIFF 2 za zb
+check raw ZUNIONSTORE zout 2 za zb
+check raw ZSCORE zout b
+check raw ZPOPMIN zout
+
+# Small commands
+check raw HSET hs f1 v1
+check raw HSTRLEN hs f1
+check raw RPUSH li a b c
+check raw LINSERT li BEFORE b x
+check raw LRANGE li 0 -1
+check raw LPOS li b
+check raw LPOS li b COUNT 0
+check raw COPY hs hscopy
+check raw HGET hscopy f1
+check raw COPY hs hscopy
+check raw COPY hs hscopy REPLACE
+
 # Errors
 check raw HSET h odd
 check raw LPUSH
