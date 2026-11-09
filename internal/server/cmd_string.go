@@ -24,6 +24,9 @@ func init() {
 	registerCommand("MSETNX", -3, flagWrite, cmdMSetNX)
 	registerCommand("APPEND", 3, flagWrite, cmdAppend)
 	registerCommand("STRLEN", 2, flagReadOnly|flagFast, cmdStrLen)
+	registerCommand("GETRANGE", 4, flagReadOnly, cmdGetRange)
+	registerCommand("SETRANGE", 4, flagWrite, cmdSetRange)
+	registerCommand("INCRBYFLOAT", 3, flagWrite|flagFast, cmdIncrByFloat)
 	registerCommand("INCR", 2, flagWrite|flagFast, cmdIncr)
 	registerCommand("DECR", 2, flagWrite|flagFast, func(c *client, args [][]byte) (result, error) {
 		return incrBy(c, args[1], -1)
@@ -339,6 +342,54 @@ func cmdStrLen(c *client, args [][]byte) (result, error) {
 		return result{}, err
 	}
 	return result{reply: intReply(n)}, nil
+}
+
+func cmdGetRange(c *client, args [][]byte) (result, error) {
+	start, err := parseInt(args[2])
+	if err != nil {
+		return result{}, err
+	}
+	end, err := parseInt(args[3])
+	if err != nil {
+		return result{}, err
+	}
+	value, err := c.srv.data.GetRange(string(args[1]), start, end)
+	if err != nil {
+		return result{}, err
+	}
+	return result{reply: bulkReply(value)}, nil
+}
+
+func cmdSetRange(c *client, args [][]byte) (result, error) {
+	offset, err := parseInt(args[2])
+	if err != nil {
+		return result{}, err
+	}
+	length, err := c.srv.data.SetRange(string(args[1]), offset, args[3])
+	switch {
+	case err == nil:
+	case errors.Is(err, store.ErrOffsetOutOfRange):
+		return result{}, fmt.Errorf("ERR offset is out of range")
+	case errors.Is(err, store.ErrStringTooLarge):
+		return result{}, fmt.Errorf("ERR string exceeds maximum allowed size (proto-max-bulk-len)")
+	default:
+		return result{}, err
+	}
+	return result{reply: intReply(length), mutated: true}, nil
+}
+
+func cmdIncrByFloat(c *client, args [][]byte) (result, error) {
+	value, err := c.srv.data.IncrByFloat(string(args[1]), string(args[2]))
+	switch {
+	case err == nil:
+	case errors.Is(err, store.ErrNotFloat):
+		return result{}, fmt.Errorf("ERR value is not a valid float")
+	case errors.Is(err, store.ErrFloatResult):
+		return result{}, fmt.Errorf("ERR increment would produce NaN or Infinity")
+	default:
+		return result{}, err
+	}
+	return result{reply: bulkReply(value), mutated: true}, nil
 }
 
 func cmdIncr(c *client, args [][]byte) (result, error) {

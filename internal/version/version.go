@@ -2,7 +2,7 @@
 package version
 
 // Version is the semantic version of redlite.
-const Version = "0.6.0"
+const Version = "0.7.0"
 
 // Commit is overridden at build time with -ldflags.
 var Commit = "dev"

@@ -202,6 +202,10 @@ func arityOK(arity, argc int) bool {
 func (s *Server) execute(c *client, args [][]byte) (result, error) {
 	name := strings.ToUpper(string(args[0]))
 
+	if !c.authed && name != "AUTH" && name != "HELLO" && name != "QUIT" && name != "RESET" {
+		return result{}, errors.New("NOAUTH Authentication required.")
+	}
+
 	// A replica rejects writes before they can be queued, so a transaction
 	// stays clean. EXEC itself is allowed and will run an empty batch.
 	if s.replicaMode.Load() && !c.fromMaster {

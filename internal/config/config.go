@@ -21,6 +21,8 @@ type Config struct {
 	LogLevel    string
 	MaxClients  int
 	Timeout     time.Duration
+	RequirePass string
+	MasterAuth  string
 }
 
 // Default returns the settings used when no flags are supplied.
@@ -38,6 +40,8 @@ func Default() Config {
 		LogLevel:    "info",
 		MaxClients:  10000,
 		Timeout:     0,
+		RequirePass: "",
+		MasterAuth:  "",
 	}
 }
 

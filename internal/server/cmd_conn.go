@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -80,7 +81,11 @@ func cmdHello(c *client, args [][]byte) (result, error) {
 			if next+2 >= len(args) {
 				return result{}, errSyntax
 			}
-			return result{}, fmt.Errorf("WRONGPASS invalid username-password pair or user is disabled")
+			if err := c.srv.authenticate(string(args[next+1]), string(args[next+2])); err != nil {
+				return result{}, err
+			}
+			c.authed = true
+			next += 3
 		case "SETNAME":
 			if next+1 >= len(args) {
 				return result{}, errSyntax
@@ -92,6 +97,10 @@ func cmdHello(c *client, args [][]byte) (result, error) {
 		default:
 			return result{}, errSyntax
 		}
+	}
+
+	if c.srv.authRequired() && !c.authed {
+		return result{}, errors.New("NOAUTH HELLO must be called with the client already authenticated, otherwise the HELLO <proto> AUTH <user> <pass> option can be used to authenticate the client and select the RESP protocol version at the same time")
 	}
 
 	if err := c.setProto(proto); err != nil {
@@ -189,6 +198,24 @@ func cmdCommand(c *client, args [][]byte) (result, error) {
 		return result{reply: out}, nil
 	case "DOCS":
 		return result{reply: arrayReply{}}, nil
+	case "GETKEYS":
+		if len(args) < 3 {
+			return result{}, errSyntax
+		}
+		target := strings.ToUpper(string(args[2]))
+		cmd, ok := lookupCommand(target)
+		if !ok {
+			return result{}, fmt.Errorf("ERR Invalid command specified")
+		}
+		if !arityOK(cmd.arity, len(args)-2) {
+			return result{}, fmt.Errorf("ERR Invalid number of arguments specified for command")
+		}
+		keys := commandKeys(target, args[2:])
+		out := make(arrayReply, 0, len(keys))
+		for _, key := range keys {
+			out = append(out, bulkReply(key))
+		}
+		return result{reply: out}, nil
 	default:
 		return result{}, fmt.Errorf("ERR unknown subcommand '%s' for COMMAND", printable(args[1]))
 	}

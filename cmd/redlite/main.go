@@ -37,6 +37,8 @@ func run(args []string) error {
 	flags.StringVar(&cfg.LogLevel, "loglevel", cfg.LogLevel, "log level: debug, info, warn or error")
 	flags.IntVar(&cfg.MaxClients, "maxclients", cfg.MaxClients, "maximum number of concurrent clients")
 	flags.DurationVar(&cfg.Timeout, "timeout", cfg.Timeout, "idle client timeout, 0 disables")
+	flags.StringVar(&cfg.RequirePass, "requirepass", cfg.RequirePass, "password clients must send with AUTH; empty disables authentication")
+	flags.StringVar(&cfg.MasterAuth, "masterauth", cfg.MasterAuth, "password this replica sends to its primary")
 	showVersion := flags.Bool("version", false, "print the version and exit")
 
 	if err := flags.Parse(args); err != nil {

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -136,6 +137,97 @@ func TestAOFRewrite(t *testing.T) {
 	if string(commands[0][1]) != "kept" {
 		t.Fatalf("unexpected key after rewrite: %q", commands[0][1])
 	}
+}
+
+func TestAOFRewriteAsyncKeepsConcurrentWrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "appendonly.aof")
+	aof, err := OpenAOF(path, SyncAlways)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer aof.Close()
+
+	if err := aof.Append([][]byte{[]byte("SET"), []byte("base"), []byte("1")}); err != nil {
+		t.Fatal(err)
+	}
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- aof.RewriteAsync(func(w *resp.Writer) error {
+			if err := writeTestCommand(w, "SET", "rewritten", "1"); err != nil {
+				return err
+			}
+			close(started)
+			<-release
+			return nil
+		})
+	}()
+
+	<-started
+	if err := aof.Append([][]byte{[]byte("SET"), []byte("concurrent"), []byte("1")}); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("RewriteAsync: %v", err)
+	}
+
+	var commands [][][]byte
+	if _, err := aof.Load(func(args [][]byte) error {
+		commands = append(commands, args)
+		return nil
+	}); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(commands) != 2 {
+		t.Fatalf("rewritten log has %d commands, want 2", len(commands))
+	}
+	if string(commands[0][1]) != "rewritten" || string(commands[1][1]) != "concurrent" {
+		t.Fatalf("unexpected commands after rewrite: %q", commands)
+	}
+}
+
+func TestAOFRewriteRejectsConcurrentRewrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "appendonly.aof")
+	aof, err := OpenAOF(path, SyncNo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer aof.Close()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- aof.RewriteAsync(func(w *resp.Writer) error {
+			close(started)
+			<-release
+			return nil
+		})
+	}()
+
+	<-started
+	if err := aof.RewriteAsync(func(w *resp.Writer) error { return nil }); !errors.Is(err, ErrRewriteInProgress) {
+		t.Fatalf("want ErrRewriteInProgress, got %v", err)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeTestCommand(w *resp.Writer, parts ...string) error {
+	if err := w.WriteArrayHeader(len(parts)); err != nil {
+		return err
+	}
+	for _, part := range parts {
+		if err := w.WriteBulk([]byte(part)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func TestAOFRejectsUnknownSyncPolicy(t *testing.T) {

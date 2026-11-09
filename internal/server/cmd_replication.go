@@ -216,6 +216,16 @@ func (s *Server) syncWithMaster(addr string, cancel chan struct{}) error {
 		return err
 	}
 
+	if s.cfg.MasterAuth != "" {
+		if err := write("AUTH", s.cfg.MasterAuth); err != nil {
+			return err
+		}
+		line, err := buffered.ReadString('\n')
+		if err != nil || !strings.HasPrefix(line, "+OK") {
+			return fmt.Errorf("master authentication failed: %q", strings.TrimSpace(line))
+		}
+	}
+
 	if err := write("PING"); err != nil {
 		return err
 	}

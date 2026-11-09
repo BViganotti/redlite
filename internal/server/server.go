@@ -36,17 +36,18 @@ type Server struct {
 	clients   map[int64]*client
 	nextID    atomic.Int64
 
-	maxClients   atomic.Int64
-	started      time.Time
-	totalConns   atomic.Uint64
-	totalCmds    atomic.Uint64
-	aofErrors    atomic.Uint64
-	rejected     atomic.Uint64
-	lastSave     atomic.Int64
-	bgsaveActive atomic.Bool
-	rdbOK        atomic.Bool
-	replaying    atomic.Bool
-	shuttingDown atomic.Bool
+	maxClients      atomic.Int64
+	started         time.Time
+	totalConns      atomic.Uint64
+	totalCmds       atomic.Uint64
+	aofErrors       atomic.Uint64
+	rejected        atomic.Uint64
+	lastSave        atomic.Int64
+	bgsaveActive    atomic.Bool
+	bgrewriteActive atomic.Bool
+	rdbOK           atomic.Bool
+	replaying       atomic.Bool
+	shuttingDown    atomic.Bool
 
 	wg           sync.WaitGroup
 	shutdownOnce sync.Once
@@ -65,6 +66,8 @@ type Server struct {
 	replPort    string
 	replUp      atomic.Bool
 	replicaMode atomic.Bool
+
+	requirePass atomic.Value // string
 }
 
 // New builds a server, opens the append-only file if enabled, and replays it.
@@ -98,6 +101,7 @@ func New(cfg config.Config, logger *slog.Logger, level *slog.LevelVar) (*Server,
 	srv.maxClients.Store(int64(cfg.MaxClients))
 	srv.lastSave.Store(srv.started.Unix())
 	srv.rdbOK.Store(true)
+	srv.requirePass.Store(cfg.RequirePass)
 	srv.data.StartExpiry(100*time.Millisecond, 20)
 
 	if !cfg.AppendOnly {

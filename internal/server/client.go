@@ -30,6 +30,7 @@ type client struct {
 	mu      sync.Mutex
 	cname   string
 	lastCmd string
+	authed  bool
 
 	multi      bool
 	dirty      bool
@@ -52,6 +53,7 @@ func newClient(srv *Server, conn net.Conn, id int64) *client {
 		id:      id,
 		addr:    conn.RemoteAddr().String(),
 		created: time.Now(),
+		authed:  !srv.authRequired(),
 	}
 	c.proto.Store(2)
 	return c
@@ -65,6 +67,7 @@ func newReplayClient(srv *Server) *client {
 		wr:      resp.NewWriter(discardWriter{}),
 		addr:    "replay",
 		created: time.Now(),
+		authed:  true,
 	}
 	c.proto.Store(2)
 	return c

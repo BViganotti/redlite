@@ -105,6 +105,7 @@ func (s *Server) infoPersistence() string {
 		writeInfoField(&b, "aof_current_size", strconv.FormatInt(s.aof.Size(), 10))
 		writeInfoField(&b, "aof_base_size", "0")
 		writeInfoField(&b, "aof_pending_rewrite", "0")
+		writeInfoField(&b, "aof_rewrite_in_progress", bool01(s.aof.Rewriting()))
 		writeInfoField(&b, "aof_last_bgrewrite_status", "ok")
 		writeInfoField(&b, "aof_last_write_status", "ok")
 		writeInfoField(&b, "aof_last_write_errno", "0")
@@ -258,6 +259,7 @@ func (s *Server) configSnapshot() map[string]string {
 		"loglevel":    strings.ToLower(s.level.Level().String()),
 		"timeout":     strconv.Itoa(int(s.cfg.Timeout.Seconds())),
 		"databases":   "1",
+		"requirepass": s.currentPassword(),
 	}
 	if s.aof != nil {
 		snapshot["appendfsync"] = string(s.aof.Policy())
@@ -300,6 +302,9 @@ func (s *Server) setConfig(key, value string) error {
 			return fmt.Errorf("ERR Invalid argument '%s' for CONFIG SET 'loglevel'", value)
 		}
 		return nil
+	case "requirepass":
+		s.requirePass.Store(value)
+		return nil
 	case "appendonly", "dir", "bind", "port":
 		return fmt.Errorf("ERR CONFIG SET '%s' cannot be changed at runtime", key)
 	default:
@@ -333,20 +338,40 @@ func (s *Server) rewriteAOF() error {
 	if s.aof == nil {
 		return fmt.Errorf("append only file is disabled")
 	}
-	err := s.aof.Rewrite(func(w *resp.Writer) error {
-		var writeErr error
-		s.data.EmitSnapshot(func(args [][]byte) {
-			if writeErr != nil {
-				return
-			}
-			writeErr = writeCommand(w, args)
-		})
-		return writeErr
-	})
-	if err == nil {
-		s.lastSave.Store(time.Now().Unix())
+	if !s.startBGRewriteAOF() {
+		return fmt.Errorf("background append only file rewriting already in progress")
 	}
-	return err
+	return nil
+}
+
+// startBGRewriteAOF rewrites the log in the background. Appends during the
+// rewrite are buffered by the AOF and folded into the new file.
+func (s *Server) startBGRewriteAOF() bool {
+	if s.aof == nil {
+		return false
+	}
+	if !s.bgrewriteActive.CompareAndSwap(false, true) {
+		return false
+	}
+	go func() {
+		defer s.bgrewriteActive.Store(false)
+		err := s.aof.RewriteAsync(func(w *resp.Writer) error {
+			var writeErr error
+			s.data.EmitSnapshot(func(args [][]byte) {
+				if writeErr != nil {
+					return
+				}
+				writeErr = writeCommand(w, args)
+			})
+			return writeErr
+		})
+		if err != nil {
+			s.logger.Error("append-only file rewrite failed", "err", err)
+			return
+		}
+		s.lastSave.Store(time.Now().Unix())
+	}()
+	return true
 }
 
 func writeCommand(w *resp.Writer, args [][]byte) error {

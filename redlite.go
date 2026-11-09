@@ -45,6 +45,10 @@ type Config struct {
 	Timeout time.Duration
 	// Logger receives server logs. Nil discards them.
 	Logger *slog.Logger
+	// RequirePass enables authentication. Empty means no password.
+	RequirePass string
+	// MasterAuth is the password sent to a primary when replicating.
+	MasterAuth string
 }
 
 // Server is a running embedded instance.
@@ -78,6 +82,8 @@ func Start(cfg Config) (*Server, error) {
 		settings.LogLevel = cfg.LogLevel
 	}
 	settings.Timeout = cfg.Timeout
+	settings.RequirePass = cfg.RequirePass
+	settings.MasterAuth = cfg.MasterAuth
 
 	logger := cfg.Logger
 	if logger == nil {

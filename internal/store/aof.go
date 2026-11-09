@@ -36,6 +36,14 @@ func ParseSyncPolicy(s string) (SyncPolicy, error) {
 // ErrAOFClosed is returned when appending after Close.
 var ErrAOFClosed = errors.New("append-only file is closed")
 
+// Rewrite errors.
+var (
+	ErrRewriteInProgress = errors.New("append-only file rewrite already in progress")
+	ErrRewriteAborted    = errors.New("append-only file rewrite aborted")
+)
+
+const maxRewriteBuffer = 64 << 20
+
 // AOF is an append-only command log stored as RESP arrays.
 type AOF struct {
 	mu     sync.Mutex
@@ -45,6 +53,11 @@ type AOF struct {
 	stop   chan struct{}
 	done   chan struct{}
 	closed bool
+
+	rewriting      bool
+	rewriteAborted bool
+	buffer         [][]byte
+	bufferBytes    int64
 }
 
 // OpenAOF opens (creating if needed) the log at path.
@@ -146,6 +159,16 @@ func (a *AOF) Append(args [][]byte) error {
 	if _, err := a.file.Write(buf); err != nil {
 		return err
 	}
+	if a.rewriting {
+		if a.bufferBytes+int64(len(buf)) > maxRewriteBuffer {
+			a.rewriteAborted = true
+			a.buffer = nil
+			a.bufferBytes = 0
+		} else {
+			a.buffer = append(a.buffer, buf)
+			a.bufferBytes += int64(len(buf))
+		}
+	}
 	if a.policy == SyncAlways {
 		return a.file.Sync()
 	}
@@ -219,6 +242,118 @@ func (a *AOF) Load(replay func(args [][]byte) error) (truncatedBytes int64, err 
 		return 0, err
 	}
 	return 0, nil
+}
+
+// Rewriting reports whether a background rewrite is running.
+func (a *AOF) Rewriting() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.rewriting
+}
+
+// RewriteAsync replaces the log with the output of write without blocking
+// writers for the whole duration. Appends that arrive during the rewrite are
+// written to the old file (so a failure loses nothing) and buffered; the buffer
+// is appended to the new file just before it is swapped in.
+func (a *AOF) RewriteAsync(write func(w *resp.Writer) error) error {
+	a.mu.Lock()
+	if a.closed || a.file == nil {
+		a.mu.Unlock()
+		return ErrAOFClosed
+	}
+	if a.rewriting {
+		a.mu.Unlock()
+		return ErrRewriteInProgress
+	}
+	a.rewriting = true
+	a.rewriteAborted = false
+	a.buffer = nil
+	a.bufferBytes = 0
+	a.mu.Unlock()
+
+	tmp, err := os.CreateTemp(filepath.Dir(a.path), "redlite-aof-*.tmp")
+	if err != nil {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return a.abortRewrite(err)
+	}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+
+	writer := resp.NewWriter(tmp)
+	if err := write(writer); err != nil {
+		_ = tmp.Close()
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return a.abortRewrite(err)
+	}
+	if err := writer.Flush(); err != nil {
+		_ = tmp.Close()
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return a.abortRewrite(err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return a.abortRewrite(err)
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.rewriteAborted || a.closed {
+		_ = tmp.Close()
+		return a.abortRewrite(ErrRewriteAborted)
+	}
+
+	for _, command := range a.buffer {
+		if _, err := tmp.Write(command); err != nil {
+			_ = tmp.Close()
+			return a.abortRewrite(err)
+		}
+	}
+	a.buffer = nil
+	a.bufferBytes = 0
+
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return a.abortRewrite(err)
+	}
+	if err := tmp.Close(); err != nil {
+		return a.abortRewrite(err)
+	}
+	if err := os.Rename(tmpName, a.path); err != nil {
+		return a.abortRewrite(err)
+	}
+	reopened, err := os.OpenFile(a.path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
+	if err != nil {
+		return a.abortRewrite(err)
+	}
+
+	old := a.file
+	a.file = reopened
+	a.rewriting = false
+	a.rewriteAborted = false
+	cleanup = false
+
+	go func() { _ = old.Close() }()
+	return nil
+}
+
+// abortRewrite clears rewrite state. The caller must hold a.mu.
+func (a *AOF) abortRewrite(err error) error {
+	a.rewriting = false
+	a.rewriteAborted = false
+	a.buffer = nil
+	a.bufferBytes = 0
+	return err
 }
 
 // Rewrite replaces the log with the output of write, atomically.
