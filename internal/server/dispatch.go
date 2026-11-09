@@ -221,7 +221,7 @@ func (s *Server) execute(c *client, args [][]byte) (result, error) {
 		}
 	}
 
-	if c.multi && name != "EXEC" && name != "DISCARD" && name != "MULTI" && name != "WATCH" && name != "QUIT" {
+	if c.multi && name != "EXEC" && name != "DISCARD" && name != "MULTI" && name != "WATCH" && name != "QUIT" && name != "RESET" {
 		return s.queueCommand(c, args)
 	}
 
