@@ -98,10 +98,34 @@ runs. It is a debugging command, exactly as in Redis.
 - No password or ACL support. `HELLO ... AUTH` returns `WRONGPASS`.
 - The server binds to `127.0.0.1` by default. Do not expose it publicly.
 
-### Transactions and pub/sub
+### Transactions
 
-- `MULTI`, `EXEC`, `WATCH`, `SUBSCRIBE`, `PUBLISH` and blocking commands are not
-  implemented. They are tracked for v0.3.
+- `MULTI`, `EXEC`, `DISCARD`, `WATCH` and `UNWATCH` are supported.
+- Queued commands are validated for name and arity at queue time. Any error
+  before `EXEC` aborts the whole transaction with `EXECABORT`.
+- Runtime errors (for example `INCR` on a non-integer) are returned as elements
+  of the `EXEC` array; the rest of the transaction still applies.
+- `EXEC` is atomic with respect to other clients: the server takes a write gate
+  for the whole batch.
+- `WATCH` compares a key's existence, value version and flush epoch. It aborts
+  when a watched key's state changed, which covers the usual read-modify-write
+  pattern. Unlike Redis, creating and then deleting a key between `WATCH` and
+  `EXEC` does not abort if the final state is identical.
+- Blocking commands (`BLPOP`, `BRPOP`) are not implemented yet.
+
+### Pub/Sub
+
+- `SUBSCRIBE`, `UNSUBSCRIBE`, `PSUBSCRIBE`, `PUNSUBSCRIBE`, `PUBLISH` and
+  `PUBSUB CHANNELS|NUMSUB|NUMPAT` are supported.
+- RESP2 subscribers receive arrays; RESP3 subscribers receive push frames (`>`).
+- In RESP2, a subscribed connection may only run the subscribe family, `PING`,
+  `QUIT` or `RESET`. RESP3 connections may run any command while subscribed.
+- Delivery is synchronous with a write deadline per subscriber. A subscriber
+  that stops reading cannot block publishers indefinitely, but it is not
+  buffered without bound either.
+- `PUBLISH` counts deliveries: a client subscribed to both a channel and a
+  matching pattern is counted twice.
+- Keyspace notifications (`notify-keyspace-events`) are not implemented.
 
 ### Persistence
 

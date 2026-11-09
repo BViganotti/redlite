@@ -73,6 +73,10 @@ docker compose up --build
 
 **Connection**: `PING` `ECHO` `QUIT` `SELECT` `HELLO`
 
+**Transactions**: `MULTI` `EXEC` `DISCARD` `WATCH` `UNWATCH`
+
+**Pub/Sub**: `SUBSCRIBE` `UNSUBSCRIBE` `PSUBSCRIBE` `PUNSUBSCRIBE` `PUBLISH` `PUBSUB`
+
 **Introspection**: `CLIENT` `COMMAND` `CONFIG` `INFO` `TIME` `LASTSAVE` `SHUTDOWN` `BGREWRITEAOF`
 
 **Strings**: `GET` `SET` `SETNX` `SETEX` `PSETEX` `GETSET` `GETDEL` `GETEX`
@@ -95,7 +99,7 @@ docker compose up --build
 `RENAMENX` `EXPIRE` `PEXPIRE` `EXPIREAT` `PEXPIREAT` `TTL` `PTTL` `PERSIST`
 `EXPIRETIME` `PEXPIRETIME` `TOUCH` `DBSIZE` `FLUSHDB` `FLUSHALL`
 
-That is 105 commands. Every value carries an explicit type, so touching a hash
+That is 116 commands. Every value carries an explicit type, so touching a hash
 with `GET` or a string with `HGET` returns `WRONGTYPE` instead of guessing.
 See [docs/compatibility.md](docs/compatibility.md) for the differences you will
 hit and [ROADMAP.md](ROADMAP.md) for what comes next.
@@ -118,12 +122,36 @@ hit and [ROADMAP.md](ROADMAP.md) for what comes next.
   commands (`HSET`, `RPUSH`, `SADD`).
 - **One goroutine per connection**, a small command table, and replies that are
   values rather than writes, which keeps persistence ordered before replies.
+- **Transactions are atomic**: `EXEC` takes a server-wide write gate so a queued
+  batch cannot interleave with another client. `WATCH` compares per-key versions
+  captured when the watch was armed.
+- **Pub/Sub** delivers RESP3 push frames, or plain arrays to RESP2 subscribers,
+  with per-connection write serialisation.
 - **Lists are ring buffers**, so pushes and pops are O(1) at both ends.
 - **Sorted sets use a skiplist** with spans, like Redis. Inserts, deletes and
   rank queries are O(log n), and the structure is checked against a naive model
   over thousands of randomised operations.
 
 More detail in [docs/architecture.md](docs/architecture.md).
+
+## Embedding
+
+Redlite can run inside a Go test process, which means no container and no
+background service:
+
+```go
+srv, err := redlite.Start(redlite.Config{Port: 0, Dir: t.TempDir()})
+if err != nil {
+    t.Fatal(err)
+}
+defer srv.Close(context.Background())
+
+client := redis.NewClient(&redis.Options{Addr: srv.Addr()})
+```
+
+`Port: 0` picks a free port and `Addr()` reports it. Set `AppendOnly` and `Dir`
+if you want the data to survive a restart. The package logs nothing unless you
+pass a `Logger`.
 
 ## Configuration
 

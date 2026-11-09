@@ -30,9 +30,9 @@ duplicate effort.
 
 ## v0.3 — concurrency semantics
 
-- [ ] `MULTI` / `EXEC` / `DISCARD` / `WATCH`
+- [x] `MULTI` / `EXEC` / `DISCARD` / `WATCH`
 - [ ] Blocking variants (`BLPOP`, `BRPOP`) with deadline handling
-- [ ] `PUBLISH` / `SUBSCRIBE` / `PSUBSCRIBE`, including RESP3 push frames
+- [x] `PUBLISH` / `SUBSCRIBE` / `PSUBSCRIBE`, including RESP3 push frames
 - [ ] Keyspace notifications (`CONFIG SET notify-keyspace-events`)
 
 ## v0.4 — durability and replication
@@ -64,7 +64,7 @@ duplicate effort.
 
 ## Tooling and distribution
 
-- [ ] Go embed API (`redlite.New(...)` returning a `redis.UniversalClient`-friendly server)
+- [x] Go embed API (`redlite.Start` returning a server with `Addr` and `Close`)
 - [ ] Homebrew tap and `go install` instructions
 - [ ] Signed releases with `goreleaser`
 - [ ] Documentation site generated from `docs/`
