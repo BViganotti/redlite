@@ -1,11 +1,8 @@
 package server
 
 import (
-	"crypto/sha256"
-	"crypto/subtle"
-	"encoding/hex"
-	"errors"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -14,42 +11,25 @@ func init() {
 	registerCommand("ACL", -2, flagAdmin, cmdAcl)
 }
 
-// authRequired reports whether a password is configured.
-func (s *Server) authRequired() bool {
-	password, _ := s.requirePass.Load().(string)
-	return password != ""
-}
-
-func (s *Server) currentPassword() string {
-	password, _ := s.requirePass.Load().(string)
-	return password
-}
-
-// authenticate validates credentials for the single "default" user.
-func (s *Server) authenticate(user, password string) error {
-	expected := s.currentPassword()
-	if expected == "" {
-		return errors.New("ERR Client sent AUTH, but no password is set. Did you mean AUTH <username> <password>?")
-	}
-	if user != "default" || subtle.ConstantTimeCompare([]byte(password), []byte(expected)) != 1 {
-		return errors.New("WRONGPASS invalid username-password pair or user is disabled.")
-	}
-	return nil
-}
-
 func cmdAuth(c *client, args [][]byte) (result, error) {
+	user := "default"
+	password := ""
+
 	switch len(args) {
 	case 2:
-		if err := c.srv.authenticate("default", string(args[1])); err != nil {
-			return result{}, err
-		}
+		password = string(args[1])
 	case 3:
-		if err := c.srv.authenticate(string(args[1]), string(args[2])); err != nil {
-			return result{}, err
-		}
+		user = string(args[1])
+		password = string(args[2])
 	default:
 		return result{}, fmt.Errorf("ERR wrong number of arguments for 'auth' command")
 	}
+
+	name, err := c.srv.authenticate(user, password)
+	if err != nil {
+		return result{}, err
+	}
+	c.userName = name
 	c.authed = true
 	return result{reply: simpleReply("OK")}, nil
 }
@@ -57,18 +37,32 @@ func cmdAuth(c *client, args [][]byte) (result, error) {
 func cmdAcl(c *client, args [][]byte) (result, error) {
 	switch strings.ToUpper(string(args[1])) {
 	case "WHOAMI":
-		return result{reply: bulkReply("default")}, nil
+		return result{reply: bulkReply(c.userName)}, nil
+
+	case "USERS":
+		names := c.srv.acl.names()
+		out := make(arrayReply, 0, len(names))
+		for _, name := range names {
+			out = append(out, bulkReply(name))
+		}
+		return result{reply: out}, nil
 
 	case "LIST":
-		line := "user default on"
-		if password := c.srv.currentPassword(); password != "" {
-			sum := sha256.Sum256([]byte(password))
-			line += " #" + hex.EncodeToString(sum[:])
-		} else {
-			line += " nopass"
+		names := c.srv.acl.names()
+		out := make(arrayReply, 0, len(names))
+		for _, name := range names {
+			out = append(out, bulkReply(c.srv.acl.get(name).describe()))
 		}
-		line += " ~* &* +@all"
-		return result{reply: arrayReply{bulkReply(line)}}, nil
+		return result{reply: out}, nil
+
+	case "SETUSER":
+		return cmdAclSetUser(c, args)
+
+	case "DELUSER":
+		return cmdAclDelUser(c, args)
+
+	case "GETUSER":
+		return cmdAclGetUser(c, args)
 
 	case "CAT":
 		return result{reply: arrayReply{
@@ -84,10 +78,43 @@ func cmdAcl(c *client, args [][]byte) (result, error) {
 	case "HELP":
 		return result{reply: arrayReply{
 			bulkReply("ACL <subcommand>"),
-			bulkReply("WHOAMI, LIST, CAT. Per-user ACLs are not implemented; there is one default user."),
+			bulkReply("WHOAMI, USERS, LIST, GETUSER, SETUSER, DELUSER, CAT"),
 		}}, nil
 
 	default:
 		return result{}, fmt.Errorf("ERR unknown subcommand '%s' for ACL", printable(args[1]))
 	}
+}
+
+func aclCommandsDescription(user *aclUser) string {
+	if user.allCommands {
+		return "+@all"
+	}
+	parts := make([]string, 0, len(user.allowed)+len(user.denied)+2)
+	if user.allowRead {
+		parts = append(parts, "+@read")
+	}
+	if user.allowWrite {
+		parts = append(parts, "+@write")
+	}
+	allowed := make([]string, 0, len(user.allowed))
+	for name := range user.allowed {
+		allowed = append(allowed, name)
+	}
+	sort.Strings(allowed)
+	for _, name := range allowed {
+		parts = append(parts, "+"+strings.ToLower(name))
+	}
+	denied := make([]string, 0, len(user.denied))
+	for name := range user.denied {
+		denied = append(denied, name)
+	}
+	sort.Strings(denied)
+	for _, name := range denied {
+		parts = append(parts, "-"+strings.ToLower(name))
+	}
+	if len(parts) == 0 {
+		return "-@all"
+	}
+	return strings.Join(parts, " ")
 }

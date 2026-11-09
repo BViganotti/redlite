@@ -27,10 +27,11 @@ type client struct {
 	cmds    atomic.Uint64
 	proto   atomic.Int32
 
-	mu      sync.Mutex
-	cname   string
-	lastCmd string
-	authed  bool
+	mu       sync.Mutex
+	cname    string
+	lastCmd  string
+	authed   bool
+	userName string
 
 	multi      bool
 	dirty      bool
@@ -46,14 +47,15 @@ type client struct {
 
 func newClient(srv *Server, conn net.Conn, id int64) *client {
 	c := &client{
-		srv:     srv,
-		conn:    conn,
-		rd:      resp.NewReader(conn),
-		wr:      resp.NewWriter(conn),
-		id:      id,
-		addr:    conn.RemoteAddr().String(),
-		created: time.Now(),
-		authed:  !srv.authRequired(),
+		srv:      srv,
+		conn:     conn,
+		rd:       resp.NewReader(conn),
+		wr:       resp.NewWriter(conn),
+		id:       id,
+		addr:     conn.RemoteAddr().String(),
+		created:  time.Now(),
+		authed:   !srv.authRequired(),
+		userName: "default",
 	}
 	c.proto.Store(2)
 	return c
@@ -63,11 +65,12 @@ func newClient(srv *Server, conn net.Conn, id int64) *client {
 // file. Its replies are discarded.
 func newReplayClient(srv *Server) *client {
 	c := &client{
-		srv:     srv,
-		wr:      resp.NewWriter(discardWriter{}),
-		addr:    "replay",
-		created: time.Now(),
-		authed:  true,
+		srv:      srv,
+		wr:       resp.NewWriter(discardWriter{}),
+		addr:     "replay",
+		created:  time.Now(),
+		authed:   true,
+		userName: "default",
 	}
 	c.proto.Store(2)
 	return c

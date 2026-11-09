@@ -49,6 +49,17 @@ type Config struct {
 	RequirePass string
 	// MasterAuth is the password sent to a primary when replicating.
 	MasterAuth string
+	// TLSPort enables a TLS listener when non-zero.
+	TLSPort int
+	// TLSCertFile and TLSKeyFile are the PEM certificate and key.
+	TLSCertFile string
+	TLSKeyFile  string
+	// TLSCACertFile, when set, requires and verifies client certificates.
+	TLSCACertFile string
+	// TLSReplication makes the replica dial its primary over TLS.
+	TLSReplication bool
+	// ReplBacklogSize bounds the replication backlog in bytes.
+	ReplBacklogSize int64
 }
 
 // Server is a running embedded instance.
@@ -84,6 +95,14 @@ func Start(cfg Config) (*Server, error) {
 	settings.Timeout = cfg.Timeout
 	settings.RequirePass = cfg.RequirePass
 	settings.MasterAuth = cfg.MasterAuth
+	settings.TLSPort = cfg.TLSPort
+	settings.TLSCertFile = cfg.TLSCertFile
+	settings.TLSKeyFile = cfg.TLSKeyFile
+	settings.TLSCACertFile = cfg.TLSCACertFile
+	settings.TLSReplication = cfg.TLSReplication
+	if cfg.ReplBacklogSize > 0 {
+		settings.ReplBacklogSize = cfg.ReplBacklogSize
+	}
 
 	logger := cfg.Logger
 	if logger == nil {

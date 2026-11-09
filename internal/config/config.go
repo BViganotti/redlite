@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -24,6 +25,12 @@ type Config struct {
 	RequirePass          string
 	MasterAuth           string
 	NotifyKeyspaceEvents string
+	TLSPort              int
+	TLSCertFile          string
+	TLSKeyFile           string
+	TLSCACertFile        string
+	TLSReplication       bool
+	ReplBacklogSize      int64
 }
 
 // Default returns the settings used when no flags are supplied.
@@ -44,12 +51,23 @@ func Default() Config {
 		RequirePass:          "",
 		MasterAuth:           "",
 		NotifyKeyspaceEvents: "",
+		ReplBacklogSize:      1 << 20,
 	}
 }
 
 // Addr returns the TCP address to listen on.
 func (c Config) Addr() string {
 	return fmt.Sprintf("%s:%d", c.Bind, c.Port)
+}
+
+// TLSAddr returns the TLS address to listen on.
+func (c Config) TLSAddr() string {
+	return fmt.Sprintf("%s:%d", c.Bind, c.TLSPort)
+}
+
+// TLSPortString returns the TLS port for INFO.
+func (c Config) TLSPortString() string {
+	return strconv.Itoa(c.TLSPort)
 }
 
 // AOFPath returns the append-only file location inside Dir.
@@ -103,6 +121,20 @@ func (c Config) Validate() error {
 	}
 	if strings.ContainsAny(c.DBFilename, `/\`) {
 		problems = append(problems, errors.New("dbfilename must not contain a path separator"))
+	}
+	if c.TLSPort < 0 || c.TLSPort > 65535 {
+		problems = append(problems, fmt.Errorf("tls-port %d is out of range", c.TLSPort))
+	}
+	if c.TLSPort > 0 {
+		if c.TLSCertFile == "" || c.TLSKeyFile == "" {
+			problems = append(problems, errors.New("tls-cert-file and tls-key-file are required when tls-port is set"))
+		}
+		if c.TLSPort == c.Port {
+			problems = append(problems, errors.New("tls-port must differ from port"))
+		}
+	}
+	if c.ReplBacklogSize <= 0 {
+		problems = append(problems, errors.New("repl-backlog-size must be positive"))
 	}
 	return errors.Join(problems...)
 }

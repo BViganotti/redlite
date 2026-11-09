@@ -206,6 +206,12 @@ func (s *Server) execute(c *client, args [][]byte) (result, error) {
 		return result{}, errors.New("NOAUTH Authentication required.")
 	}
 
+	if name != "AUTH" && name != "HELLO" && name != "QUIT" {
+		if err := s.checkACL(c, name, args); err != nil {
+			return result{}, err
+		}
+	}
+
 	// A replica rejects writes before they can be queued, so a transaction
 	// stays clean. EXEC itself is allowed and will run an empty batch.
 	if s.replicaMode.Load() && !c.fromMaster {

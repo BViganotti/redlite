@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -54,13 +55,34 @@ func cmdReplConf(c *client, args [][]byte) (result, error) {
 	return result{reply: simpleReply("OK")}, nil
 }
 
-// cmdPSync performs a full resynchronisation: one snapshot, then a command
-// stream. The write side of the transaction gate is held while the snapshot is
-// serialised and the link is registered, so no write can slip between them.
+// cmdPSync handles both partial and full resynchronisation. The transaction
+// gate is held for the whole handshake so the snapshot and the stream offset
+// describe the same instant.
 func cmdPSync(c *client, args [][]byte) (result, error) {
 	srv := c.srv
 	srv.txMu.Lock()
 	defer srv.txMu.Unlock()
+
+	if len(args) >= 3 && string(args[1]) == srv.replID {
+		offset, err := strconv.ParseInt(string(args[2]), 10, 64)
+		if err == nil {
+			if data, ok := srv.backlog.since(offset); ok {
+				_ = c.conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
+				defer func() { _ = c.conn.SetWriteDeadline(time.Time{}) }()
+				if _, err := c.conn.Write([]byte("+CONTINUE\r\n")); err != nil {
+					return result{}, err
+				}
+				if len(data) > 0 {
+					if _, err := c.conn.Write(data); err != nil {
+						return result{}, err
+					}
+				}
+				srv.addReplica(c, c.conn)
+				srv.logger.Info("replica resumed", "addr", c.addr, "offset", offset)
+				return result{}, nil
+			}
+		}
+	}
 
 	var snapshot bytes.Buffer
 	if err := srv.data.Save(&snapshot); err != nil {
@@ -70,7 +92,8 @@ func cmdPSync(c *client, args [][]byte) (result, error) {
 	_ = c.conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
 	defer func() { _ = c.conn.SetWriteDeadline(time.Time{}) }()
 
-	header := fmt.Sprintf("+FULLRESYNC %s 0\r\n$%d\r\n", srv.replID, snapshot.Len())
+	offset := srv.backlog.end()
+	header := fmt.Sprintf("+FULLRESYNC %s %d\r\n$%d\r\n", srv.replID, offset, snapshot.Len())
 	if _, err := c.conn.Write([]byte(header)); err != nil {
 		return result{}, err
 	}
@@ -78,8 +101,9 @@ func cmdPSync(c *client, args [][]byte) (result, error) {
 		return result{}, err
 	}
 
+	srv.fullResyncs.Add(1)
 	srv.addReplica(c, c.conn)
-	srv.logger.Info("replica attached", "addr", c.addr)
+	srv.logger.Info("replica attached", "addr", c.addr, "offset", offset)
 	return result{}, nil
 }
 
@@ -118,18 +142,19 @@ func (s *Server) replicaCount() int {
 
 // propagate sends a command to every attached replica.
 func (s *Server) propagate(args [][]byte) {
-	s.replicasMu.RLock()
-	if len(s.replicas) == 0 {
-		s.replicasMu.RUnlock()
-		return
+	data := resp.AppendCommand(nil, args)
+	s.replOffset.Add(int64(len(data)))
+	if s.backlog != nil {
+		s.backlog.append(data)
 	}
+
+	s.replicasMu.RLock()
 	links := make([]*replicaLink, 0, len(s.replicas))
 	for _, link := range s.replicas {
 		links = append(links, link)
 	}
 	s.replicasMu.RUnlock()
 
-	data := resp.AppendCommand(nil, args)
 	for _, link := range links {
 		if err := link.send(data); err != nil {
 			// The replica's connection goroutine will notice and clean up.
@@ -154,6 +179,7 @@ func (s *Server) stopReplication() {
 
 func (s *Server) startReplication(host, port string) {
 	s.replMu.Lock()
+	changed := s.replHost != host || s.replPort != port
 	if s.replCancel != nil {
 		close(s.replCancel)
 	}
@@ -163,6 +189,10 @@ func (s *Server) startReplication(host, port string) {
 	s.replPort = port
 	s.replMu.Unlock()
 
+	if changed {
+		s.masterReplID.Store("")
+		s.masterOffset.Store(0)
+	}
 	s.replicaMode.Store(true)
 	s.replUp.Store(false)
 	go s.replicaLoop(net.JoinHostPort(host, port), cancel)
@@ -199,13 +229,41 @@ func (s *Server) replicaLoop(addr string, cancel chan struct{}) {
 var errReplicationStopped = errors.New("replication stopped")
 
 func (s *Server) syncWithMaster(addr string, cancel chan struct{}) error {
-	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	var (
+		conn net.Conn
+		err  error
+	)
+	if s.cfg.TLSReplication {
+		host, _, splitErr := net.SplitHostPort(addr)
+		if splitErr != nil {
+			return splitErr
+		}
+		tlsConfig := &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}
+		if s.cfg.TLSCACertFile != "" {
+			pool, poolErr := loadCertPool(s.cfg.TLSCACertFile)
+			if poolErr != nil {
+				return poolErr
+			}
+			tlsConfig.RootCAs = pool
+		}
+		if s.cfg.TLSCertFile != "" && s.cfg.TLSKeyFile != "" {
+			certificate, certErr := tls.LoadX509KeyPair(s.cfg.TLSCertFile, s.cfg.TLSKeyFile)
+			if certErr != nil {
+				return certErr
+			}
+			tlsConfig.Certificates = []tls.Certificate{certificate}
+		}
+		conn, err = tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", addr, tlsConfig)
+	} else {
+		conn, err = net.DialTimeout("tcp", addr, 5*time.Second)
+	}
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 
-	buffered := bufio.NewReaderSize(conn, 64*1024)
+	counter := &countingConnReader{r: conn}
+	buffered := bufio.NewReaderSize(counter, 64*1024)
 
 	write := func(args ...string) error {
 		raw := make([][]byte, len(args))
@@ -240,38 +298,66 @@ func (s *Server) syncWithMaster(addr string, cancel chan struct{}) error {
 		return fmt.Errorf("unexpected REPLCONF reply %q, %v", line, err)
 	}
 
-	if err := write("PSYNC", "?", "-1"); err != nil {
+	savedID, _ := s.masterReplID.Load().(string)
+	savedOffset := s.masterOffset.Load()
+	psyncID := "?"
+	psyncOffset := "-1"
+	if savedID != "" {
+		psyncID = savedID
+		psyncOffset = strconv.FormatInt(savedOffset, 10)
+	}
+	if err := write("PSYNC", psyncID, psyncOffset); err != nil {
 		return err
 	}
 	line, err := buffered.ReadString('\n')
 	if err != nil {
 		return err
 	}
-	if !strings.HasPrefix(line, "+FULLRESYNC") {
+
+	baseline := savedOffset
+	switch {
+	case strings.HasPrefix(line, "+CONTINUE"):
+		// Partial resync: the stream continues from the saved offset.
+	case strings.HasPrefix(line, "+FULLRESYNC"):
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) != 3 {
+			return fmt.Errorf("unexpected PSYNC reply %q", line)
+		}
+		offset, parseErr := strconv.ParseInt(fields[2], 10, 64)
+		if parseErr != nil {
+			return fmt.Errorf("invalid FULLRESYNC offset %q", fields[2])
+		}
+
+		line, err = buffered.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		if !strings.HasPrefix(line, "$") {
+			return fmt.Errorf("unexpected snapshot header %q", line)
+		}
+		size, err := strconv.Atoi(strings.TrimSpace(line[1:]))
+		if err != nil || size < 0 || size > maxSnapshotSize {
+			return fmt.Errorf("invalid snapshot size %q", line)
+		}
+
+		snapshot := make([]byte, size)
+		if _, err := io.ReadFull(buffered, snapshot); err != nil {
+			return err
+		}
+		if err := s.data.Load(bytes.NewReader(snapshot)); err != nil {
+			return fmt.Errorf("load master snapshot: %w", err)
+		}
+		s.masterReplID.Store(fields[1])
+		s.masterOffset.Store(offset)
+		baseline = offset
+		s.logger.Info("replication snapshot loaded", "master", addr, "bytes", size)
+
+	default:
 		return fmt.Errorf("unexpected PSYNC reply %q", line)
 	}
 
-	line, err = buffered.ReadString('\n')
-	if err != nil {
-		return err
-	}
-	if !strings.HasPrefix(line, "$") {
-		return fmt.Errorf("unexpected snapshot header %q", line)
-	}
-	size, err := strconv.Atoi(strings.TrimSpace(line[1:]))
-	if err != nil || size < 0 || size > maxSnapshotSize {
-		return fmt.Errorf("invalid snapshot size %q", line)
-	}
-
-	snapshot := make([]byte, size)
-	if _, err := io.ReadFull(buffered, snapshot); err != nil {
-		return err
-	}
-	if err := s.data.Load(bytes.NewReader(snapshot)); err != nil {
-		return fmt.Errorf("load master snapshot: %w", err)
-	}
 	s.replUp.Store(true)
-	s.logger.Info("replication snapshot loaded", "master", addr, "bytes", size)
+	streamBase := counter.n - int64(buffered.Buffered())
 
 	reader := resp.NewReader(buffered)
 	applyClient := newReplayClient(s)
@@ -294,7 +380,24 @@ func (s *Server) syncWithMaster(addr string, cancel chan struct{}) error {
 		if _, err := s.execute(applyClient, args); err != nil {
 			return fmt.Errorf("apply %q: %w", args[0], err)
 		}
+
+		consumed := counter.n - int64(buffered.Buffered()) - int64(reader.Buffered()) - streamBase
+		if consumed < 0 {
+			consumed = 0
+		}
+		s.masterOffset.Store(baseline + consumed)
 	}
+}
+
+type countingConnReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingConnReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
 }
 
 // maxSnapshotSize mirrors the store's snapshot limit.

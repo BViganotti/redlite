@@ -4,6 +4,8 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -30,7 +32,7 @@ type Server struct {
 	pubsub *pubsubRegistry
 
 	lnMu sync.Mutex
-	ln   net.Listener
+	lns  []net.Listener
 
 	clientsMu sync.RWMutex
 	clients   map[int64]*client
@@ -56,18 +58,23 @@ type Server struct {
 	// take a read lock; EXEC takes the write lock for the whole batch.
 	txMu sync.RWMutex
 
-	replicasMu sync.RWMutex
-	replicas   map[*client]*replicaLink
-	replID     string
+	replicasMu  sync.RWMutex
+	replicas    map[*client]*replicaLink
+	replID      string
+	backlog     *replBacklog
+	replOffset  atomic.Int64
+	fullResyncs atomic.Uint64
 
-	replMu      sync.Mutex
-	replCancel  chan struct{}
-	replHost    string
-	replPort    string
-	replUp      atomic.Bool
-	replicaMode atomic.Bool
+	replMu       sync.Mutex
+	replCancel   chan struct{}
+	replHost     string
+	replPort     string
+	replUp       atomic.Bool
+	replicaMode  atomic.Bool
+	masterOffset atomic.Int64
+	masterReplID atomic.Value // string
 
-	requirePass atomic.Value // string
+	acl *aclStore
 
 	notifyConfig atomic.Value // notifyFlags
 	notifyRaw    atomic.Value // string
@@ -101,12 +108,14 @@ func New(cfg config.Config, logger *slog.Logger, level *slog.LevelVar) (*Server,
 		clients:  make(map[int64]*client),
 		replicas: make(map[*client]*replicaLink),
 		replID:   newReplicationID(),
+		backlog:  newReplBacklog(cfg.ReplBacklogSize),
 		started:  time.Now(),
 	}
 	srv.maxClients.Store(int64(cfg.MaxClients))
 	srv.lastSave.Store(srv.started.Unix())
 	srv.rdbOK.Store(true)
-	srv.requirePass.Store(cfg.RequirePass)
+	srv.acl = newACLStore(cfg.RequirePass)
+	srv.masterReplID.Store("")
 
 	if err := validateNotifyFlags(cfg.NotifyKeyspaceEvents); err != nil {
 		srv.data.Close()
@@ -175,25 +184,52 @@ func New(cfg config.Config, logger *slog.Logger, level *slog.LevelVar) (*Server,
 func (s *Server) Listen() error {
 	s.lnMu.Lock()
 	defer s.lnMu.Unlock()
-	if s.ln != nil {
+	if len(s.lns) > 0 {
 		return errors.New("server already listening")
 	}
+
 	ln, err := net.Listen("tcp", s.cfg.Addr())
 	if err != nil {
 		return err
 	}
-	s.ln = ln
+	opened := []net.Listener{ln}
+
+	if s.cfg.TLSPort > 0 {
+		tlsConfig, err := s.buildTLSConfig()
+		if err != nil {
+			_ = ln.Close()
+			return err
+		}
+		tlsListener, err := tls.Listen("tcp", s.cfg.TLSAddr(), tlsConfig)
+		if err != nil {
+			_ = ln.Close()
+			return err
+		}
+		opened = append(opened, tlsListener)
+	}
+
+	s.lns = opened
 	return nil
 }
 
-// Addr returns the bound address, or nil before Listen.
+// Addr returns the plain TCP address, or nil before Listen.
 func (s *Server) Addr() net.Addr {
 	s.lnMu.Lock()
 	defer s.lnMu.Unlock()
-	if s.ln == nil {
+	if len(s.lns) == 0 {
 		return nil
 	}
-	return s.ln.Addr()
+	return s.lns[0].Addr()
+}
+
+// TLSAddr returns the TLS address, or nil when TLS is disabled.
+func (s *Server) TLSAddr() net.Addr {
+	s.lnMu.Lock()
+	defer s.lnMu.Unlock()
+	if len(s.lns) < 2 {
+		return nil
+	}
+	return s.lns[1].Addr()
 }
 
 // ListenAndServe binds and then accepts connections.
@@ -204,17 +240,37 @@ func (s *Server) ListenAndServe() error {
 	return s.Serve()
 }
 
-// Serve accepts connections until Shutdown closes the listener.
+// Serve accepts connections on every listener until Shutdown closes them.
 func (s *Server) Serve() error {
 	s.lnMu.Lock()
-	ln := s.ln
+	listeners := append([]net.Listener(nil), s.lns...)
 	s.lnMu.Unlock()
-	if ln == nil {
+	if len(listeners) == 0 {
 		return errors.New("server is not listening")
 	}
 
-	s.logger.Info("redlite listening", "addr", ln.Addr().String(), "aof", s.aof != nil)
+	for i, ln := range listeners {
+		s.logger.Info("redlite listening",
+			"addr", ln.Addr().String(), "tls", i > 0, "aof", s.aof != nil)
+	}
 
+	errCh := make(chan error, len(listeners))
+	for _, ln := range listeners {
+		go func(listener net.Listener) {
+			errCh <- s.acceptLoop(listener)
+		}(ln)
+	}
+
+	var firstErr error
+	for range listeners {
+		if err := <-errCh; err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func (s *Server) acceptLoop(ln net.Listener) error {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -326,8 +382,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		s.shuttingDown.Store(true)
 
 		s.lnMu.Lock()
-		if s.ln != nil {
-			_ = s.ln.Close()
+		for _, ln := range s.lns {
+			_ = ln.Close()
 		}
 		s.lnMu.Unlock()
 
@@ -365,6 +421,40 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 func (s *Server) nowMs() int64 { return time.Now().UnixMilli() }
+
+// buildTLSConfig loads the listener certificate and, when a CA is configured,
+// requires client certificates.
+func (s *Server) buildTLSConfig() (*tls.Config, error) {
+	certificate, err := tls.LoadX509KeyPair(s.cfg.TLSCertFile, s.cfg.TLSKeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("load TLS key pair: %w", err)
+	}
+	config := &tls.Config{
+		Certificates: []tls.Certificate{certificate},
+		MinVersion:   tls.VersionTLS12,
+	}
+	if s.cfg.TLSCACertFile != "" {
+		pool, err := loadCertPool(s.cfg.TLSCACertFile)
+		if err != nil {
+			return nil, err
+		}
+		config.ClientCAs = pool
+		config.ClientAuth = tls.RequireAndVerifyClientCert
+	}
+	return config, nil
+}
+
+func loadCertPool(path string) (*x509.CertPool, error) {
+	pem, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("no certificates found in %s", path)
+	}
+	return pool, nil
+}
 
 // requestShutdown initiates an orderly shutdown from inside a command.
 func (s *Server) requestShutdown() {

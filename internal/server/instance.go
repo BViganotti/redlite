@@ -57,6 +57,7 @@ func (s *Server) infoServer() string {
 	writeInfoField(&b, "arch", runtime.GOARCH)
 	writeInfoField(&b, "process_id", strconv.Itoa(os.Getpid()))
 	writeInfoField(&b, "tcp_port", strconv.Itoa(s.port()))
+	writeInfoField(&b, "tls_port", s.cfg.TLSPortString())
 	uptime := int64(time.Since(s.started).Seconds())
 	writeInfoField(&b, "uptime_in_seconds", strconv.FormatInt(uptime, 10))
 	writeInfoField(&b, "uptime_in_days", strconv.FormatInt(uptime/86400, 10))
@@ -140,12 +141,14 @@ func (s *Server) infoReplication() string {
 		}
 		writeInfoField(&b, "master_link_status", status)
 		writeInfoField(&b, "slave_read_only", "1")
+		writeInfoField(&b, "master_repl_offset", strconv.FormatInt(s.masterOffset.Load(), 10))
 	} else {
 		writeInfoField(&b, "role", "master")
 		writeInfoField(&b, "connected_slaves", strconv.Itoa(s.replicaCount()))
+		writeInfoField(&b, "master_repl_offset", strconv.FormatInt(s.replOffset.Load(), 10))
+		writeInfoField(&b, "sync_full", strconv.FormatUint(s.fullResyncs.Load(), 10))
 	}
 	writeInfoField(&b, "master_replid", s.replID)
-	writeInfoField(&b, "master_repl_offset", "0")
 	return b.String()
 }
 
@@ -259,7 +262,7 @@ func (s *Server) configSnapshot() map[string]string {
 		"loglevel":    strings.ToLower(s.level.Level().String()),
 		"timeout":     strconv.Itoa(int(s.cfg.Timeout.Seconds())),
 		"databases":   "1",
-		"requirepass": s.currentPassword(),
+		"requirepass": s.acl.defaultPassword(),
 		"notify-keyspace-events": func() string {
 			value, _ := s.notifyRaw.Load().(string)
 			return value
@@ -307,7 +310,7 @@ func (s *Server) setConfig(key, value string) error {
 		}
 		return nil
 	case "requirepass":
-		s.requirePass.Store(value)
+		s.acl.setPassword("default", value)
 		return nil
 	case "notify-keyspace-events":
 		if err := validateNotifyFlags(value); err != nil {

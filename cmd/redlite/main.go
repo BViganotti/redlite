@@ -40,6 +40,12 @@ func run(args []string) error {
 	flags.StringVar(&cfg.RequirePass, "requirepass", cfg.RequirePass, "password clients must send with AUTH; empty disables authentication")
 	flags.StringVar(&cfg.MasterAuth, "masterauth", cfg.MasterAuth, "password this replica sends to its primary")
 	flags.StringVar(&cfg.NotifyKeyspaceEvents, "notify-keyspace-events", cfg.NotifyKeyspaceEvents, "keyspace notification flags, for example KEA")
+	flags.IntVar(&cfg.TLSPort, "tls-port", cfg.TLSPort, "TLS port; requires --tls-cert-file and --tls-key-file")
+	flags.StringVar(&cfg.TLSCertFile, "tls-cert-file", cfg.TLSCertFile, "PEM certificate for the TLS listener")
+	flags.StringVar(&cfg.TLSKeyFile, "tls-key-file", cfg.TLSKeyFile, "PEM private key for the TLS listener")
+	flags.StringVar(&cfg.TLSCACertFile, "tls-ca-cert-file", cfg.TLSCACertFile, "PEM CA used to verify client certificates")
+	flags.BoolVar(&cfg.TLSReplication, "tls-replication", cfg.TLSReplication, "use TLS for the replication link")
+	flags.Int64Var(&cfg.ReplBacklogSize, "repl-backlog-size", cfg.ReplBacklogSize, "replication backlog size in bytes")
 	showVersion := flags.Bool("version", false, "print the version and exit")
 
 	if err := flags.Parse(args); err != nil {

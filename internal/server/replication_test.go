@@ -133,3 +133,42 @@ func TestReplicaIsReadOnly(t *testing.T) {
 	expectSimple(t, rc.do("SET", "local", "1"), "OK")
 	expectBulk(t, rc.do("GET", "local"), "1")
 }
+
+func TestPartialResync(t *testing.T) {
+	master := newTestServer(t, nil)
+	replica := newTestServer(t, nil)
+
+	mc := dial(t, master)
+	expectSimple(t, mc.do("SET", "pre", "1"), "OK")
+
+	rc := dial(t, replica)
+	expectSimple(t, rc.do("REPLICAOF", "127.0.0.1", strconv.Itoa(serverPort(t, master))), "OK")
+	waitFor(t, 3*time.Second, "initial sync", func() bool {
+		value, ok := getString(rc, "pre")
+		return ok && value == "1"
+	})
+	if full := master.fullResyncs.Load(); full != 1 {
+		t.Fatalf("full resyncs = %d, want 1", full)
+	}
+
+	// Drop the link from the primary side.
+	master.replicasMu.RLock()
+	for _, link := range master.replicas {
+		_ = link.conn.Close()
+	}
+	master.replicasMu.RUnlock()
+
+	// Writes while the link is down must be replayed from the backlog.
+	expectSimple(t, mc.do("SET", "during", "1"), "OK")
+	expectInt(t, mc.do("INCR", "counter"), 1)
+
+	waitFor(t, 5*time.Second, "partial resync", func() bool {
+		value, ok := getString(rc, "during")
+		return ok && value == "1"
+	})
+	expectBulk(t, rc.do("GET", "counter"), "1")
+
+	if full := master.fullResyncs.Load(); full != 1 {
+		t.Fatalf("expected a partial resync, got %d full resyncs", full)
+	}
+}

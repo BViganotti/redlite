@@ -81,9 +81,11 @@ func cmdHello(c *client, args [][]byte) (result, error) {
 			if next+2 >= len(args) {
 				return result{}, errSyntax
 			}
-			if err := c.srv.authenticate(string(args[next+1]), string(args[next+2])); err != nil {
+			name, err := c.srv.authenticate(string(args[next+1]), string(args[next+2]))
+			if err != nil {
 				return result{}, err
 			}
+			c.userName = name
 			c.authed = true
 			next += 3
 		case "SETNAME":
