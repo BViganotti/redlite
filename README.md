@@ -86,7 +86,9 @@ docker compose up --build
 `HKEYS` `HVALS` `HGETALL` `HINCRBY` `HSCAN`
 
 **Lists**: `LPUSH` `RPUSH` `LPUSHX` `RPUSHX` `LPOP` `RPOP` `LLEN` `LINDEX`
-`LSET` `LRANGE` `LTRIM` `LREM`
+`LSET` `LRANGE` `LTRIM` `LREM` `LMOVE` `RPOPLPUSH`
+
+**Blocking**: `BLPOP` `BRPOP` `BLMOVE` `BRPOPLPUSH`
 
 **Sets**: `SADD` `SREM` `SCARD` `SISMEMBER` `SMISMEMBER` `SMEMBERS` `SINTER`
 `SUNION` `SDIFF` `SPOP` `SRANDMEMBER` `SSCAN`
@@ -99,7 +101,7 @@ docker compose up --build
 `RENAMENX` `EXPIRE` `PEXPIRE` `EXPIREAT` `PEXPIREAT` `TTL` `PTTL` `PERSIST`
 `EXPIRETIME` `PEXPIRETIME` `TOUCH` `DBSIZE` `FLUSHDB` `FLUSHALL`
 
-That is 116 commands. Every value carries an explicit type, so touching a hash
+That is 122 commands. Every value carries an explicit type, so touching a hash
 with `GET` or a string with `HGET` returns `WRONGTYPE` instead of guessing.
 See [docs/compatibility.md](docs/compatibility.md) for the differences you will
 hit and [ROADMAP.md](ROADMAP.md) for what comes next.
@@ -128,6 +130,9 @@ hit and [ROADMAP.md](ROADMAP.md) for what comes next.
 - **Pub/Sub** delivers RESP3 push frames, or plain arrays to RESP2 subscribers,
   with per-connection write serialisation.
 - **Lists are ring buffers**, so pushes and pops are O(1) at both ends.
+- **Blocking commands** register a waiter per key and are woken by pushes; they
+  release the transaction gate while waiting, so a blocked client never holds up
+  another client.
 - **Sorted sets use a skiplist** with spans, like Redis. Inserts, deletes and
   rank queries are O(log n), and the structure is checked against a naive model
   over thousands of randomised operations.

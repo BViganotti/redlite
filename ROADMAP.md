@@ -31,7 +31,7 @@ duplicate effort.
 ## v0.3 — concurrency semantics
 
 - [x] `MULTI` / `EXEC` / `DISCARD` / `WATCH`
-- [ ] Blocking variants (`BLPOP`, `BRPOP`) with deadline handling
+- [x] Blocking variants (`BLPOP`, `BRPOP`, `BLMOVE`, `BRPOPLPUSH`) with timeouts
 - [x] `PUBLISH` / `SUBSCRIBE` / `PSUBSCRIBE`, including RESP3 push frames
 - [ ] Keyspace notifications (`CONFIG SET notify-keyspace-events`)
 

@@ -223,6 +223,15 @@ check_script multi-error $'MULTI\nSET onlykey\nEXEC'
 check_script exec-without-multi $'EXEC'
 check raw PUBLISH nobody hello
 
+# Blocking and moves
+check raw RPUSH bl a
+check raw BLPOP bl 1
+check raw BLPOP bl 0.05
+check raw RPUSH ml a b c
+check raw LMOVE ml ml2 RIGHT LEFT
+check raw RPOPLPUSH ml ml2
+check sort LRANGE ml2 0 -1
+
 # Errors
 check raw HSET h odd
 check raw LPUSH

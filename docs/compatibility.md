@@ -107,11 +107,16 @@ runs. It is a debugging command, exactly as in Redis.
   of the `EXEC` array; the rest of the transaction still applies.
 - `EXEC` is atomic with respect to other clients: the server takes a write gate
   for the whole batch.
+- Blocking commands (`BLPOP`, `BRPOP`, `BLMOVE`, `BRPOPLPUSH`) are supported.
+  They do not hold the transaction gate while waiting, so they cannot block
+  another client's `EXEC`. Inside `MULTI` they return immediately instead of
+  blocking, as Redis does.
 - `WATCH` compares a key's existence, value version and flush epoch. It aborts
   when a watched key's state changed, which covers the usual read-modify-write
   pattern. Unlike Redis, creating and then deleting a key between `WATCH` and
   `EXEC` does not abort if the final state is identical.
-- Blocking commands (`BLPOP`, `BRPOP`) are not implemented yet.
+- Blocked clients are woken in registration order, but the element is not
+  reserved for them: a non-blocking `LPOP` can still take it first.
 
 ### Pub/Sub
 
