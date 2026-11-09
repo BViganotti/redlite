@@ -87,21 +87,24 @@ docker compose up --build
 **Sets**: `SADD` `SREM` `SCARD` `SISMEMBER` `SMISMEMBER` `SMEMBERS` `SINTER`
 `SUNION` `SDIFF` `SPOP` `SRANDMEMBER` `SSCAN`
 
+**Sorted sets**: `ZADD` `ZREM` `ZSCORE` `ZMSCORE` `ZINCRBY` `ZCARD` `ZCOUNT`
+`ZRANGE` `ZREVRANGE` `ZRANGEBYSCORE` `ZREVRANGEBYSCORE` `ZRANK` `ZREVRANK`
+`ZREMRANGEBYRANK` `ZREMRANGEBYSCORE` `ZSCAN`
+
 **Keys**: `DEL` `UNLINK` `EXISTS` `TYPE` `KEYS` `SCAN` `RANDOMKEY` `RENAME`
 `RENAMENX` `EXPIRE` `PEXPIRE` `EXPIREAT` `PEXPIREAT` `TTL` `PTTL` `PERSIST`
 `EXPIRETIME` `PEXPIRETIME` `TOUCH` `DBSIZE` `FLUSHDB` `FLUSHALL`
 
-That is 89 commands. Every value carries an explicit type, so touching a hash
+That is 105 commands. Every value carries an explicit type, so touching a hash
 with `GET` or a string with `HGET` returns `WRONGTYPE` instead of guessing.
-Sorted sets are the next type on the roadmap; see
-[docs/compatibility.md](docs/compatibility.md) for the differences you will hit
-and [ROADMAP.md](ROADMAP.md) for what comes next.
+See [docs/compatibility.md](docs/compatibility.md) for the differences you will
+hit and [ROADMAP.md](ROADMAP.md) for what comes next.
 
 ## Design
 
-- **Four value types** — strings, hashes, lists and sets — behind one sealed
-  interface. Every command checks the type and returns `WRONGTYPE` on a
-  mismatch; `SET` replaces a value of any type, as Redis does.
+- **Five value types** — strings, hashes, lists, sets and sorted sets — behind
+  one sealed interface. Every command checks the type and returns `WRONGTYPE`
+  on a mismatch; `SET` replaces a value of any type, as Redis does.
 - **RESP2 + RESP3** with hard limits on every length prefix (`proto-max-bulk-len`
   defaults to 512 MiB, arrays to 1M elements, inline commands to 64 KiB).
 - **Append-only file** in RESP format. `appendfsync` supports `always`,
@@ -116,6 +119,9 @@ and [ROADMAP.md](ROADMAP.md) for what comes next.
 - **One goroutine per connection**, a small command table, and replies that are
   values rather than writes, which keeps persistence ordered before replies.
 - **Lists are ring buffers**, so pushes and pops are O(1) at both ends.
+- **Sorted sets use a skiplist** with spans, like Redis. Inserts, deletes and
+  rank queries are O(log n), and the structure is checked against a naive model
+  over thousands of randomised operations.
 
 More detail in [docs/architecture.md](docs/architecture.md).
 

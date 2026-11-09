@@ -23,7 +23,8 @@ duplicate effort.
 - [x] Hash commands (`HSET`, `HGET`, `HDEL`, `HGETALL`, `HINCRBY`, `HSCAN`)
 - [x] List commands (`LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LRANGE`, `LLEN`, `LINDEX`)
 - [x] Set commands (`SADD`, `SREM`, `SMEMBERS`, `SISMEMBER`, `SINTER`, `SUNION`)
-- [ ] Sorted sets (`ZADD`, `ZRANGE`, `ZRANGEBYSCORE`, `ZRANK`, `ZINCRBY`)
+- [x] Sorted sets (`ZADD`, `ZRANGE`, `ZRANGEBYSCORE`, `ZRANK`, `ZINCRBY`) on a
+      skiplist with spans
 - [x] `WRONGTYPE` errors on every cross-type access
 - [ ] `OBJECT ENCODING` for the encodings we can honestly report
 

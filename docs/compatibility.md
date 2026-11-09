@@ -23,6 +23,7 @@ server answers `unknown command` rather than pretending.
 | Hashes | `HSET` `HSETNX` `HMSET` `HGET` `HMGET` `HDEL` `HLEN` `HEXISTS` `HKEYS` `HVALS` `HGETALL` `HINCRBY` `HSCAN` |
 | Lists | `LPUSH` `RPUSH` `LPUSHX` `RPUSHX` `LPOP` `RPOP` `LLEN` `LINDEX` `LSET` `LRANGE` `LTRIM` `LREM` |
 | Sets | `SADD` `SREM` `SCARD` `SISMEMBER` `SMISMEMBER` `SMEMBERS` `SINTER` `SUNION` `SDIFF` `SPOP` `SRANDMEMBER` `SSCAN` |
+| Sorted sets | `ZADD` `ZREM` `ZSCORE` `ZMSCORE` `ZINCRBY` `ZCARD` `ZCOUNT` `ZRANGE` `ZREVRANGE` `ZRANGEBYSCORE` `ZREVRANGEBYSCORE` `ZRANK` `ZREVRANK` `ZREMRANGEBYRANK` `ZREMRANGEBYSCORE` `ZSCAN` |
 | Keyspace | `DEL` `UNLINK` `EXISTS` `TYPE` `KEYS` `SCAN` `RANDOMKEY` `RENAME` `RENAMENX` `TOUCH` `DBSIZE` `FLUSHDB` `FLUSHALL` |
 | Expiry | `EXPIRE` `PEXPIRE` `EXPIREAT` `PEXPIREAT` `TTL` `PTTL` `PERSIST` `EXPIRETIME` `PEXPIRETIME` |
 
@@ -30,24 +31,34 @@ server answers `unknown command` rather than pretending.
 
 ### Data model
 
-- Four value types exist: string, hash, list and set. Sorted sets, streams and
-  bitmaps are not implemented yet (`ROADMAP.md`, v0.2).
+- Five value types exist: string, hash, list, set and sorted set. Streams,
+  bitmaps and hyperloglogs are not implemented yet (`ROADMAP.md`).
 - Every command checks the type and returns
   `WRONGTYPE Operation against a key holding the wrong kind of value` instead of
   coercing. `MGET` is the one exception Redis defines: a non-string value is
   reported as nil.
 - `SET`, `MSET` and `GETSET` replace a value of any type. `SET ... GET` on a
   non-string key returns `WRONGTYPE` without writing.
-- Empty hashes, lists and sets are removed from the keyspace.
+- Empty hashes, lists, sets and sorted sets are removed from the keyspace.
 - One database. `SELECT 0` succeeds; any other index returns
   `ERR DB index is out of range`.
+
+### RESP3 reply shapes
+
+- `HGETALL` returns a map in RESP3 and a flat array in RESP2, matching Redis.
+- `ZRANGE`, `ZREVRANGE`, `ZRANGEBYSCORE` and `ZREVRANGEBYSCORE` with
+  `WITHSCORES` return an array of `[member, score]` pairs in RESP3 and a flat
+  `member, score, ...` array in RESP2.
+- `CONFIG GET` returns a map in RESP3 and a flat array in RESP2.
+- `HSCAN`, `SSCAN` and `ZSCAN` return `[cursor, flat pairs]` in both protocols.
 
 ### Ordering and randomness
 
 Redis leaves the order of `HGETALL`, `HKEYS`, `HVALS`, `SMEMBERS`, `SINTER`,
-`SUNION`, `SDIFF`, and `HSCAN`/`SSCAN` pages unspecified. Redlite returns them
-sorted. That is compatible with the contract (callers may not depend on order)
-and makes tests reproducible, but do not treat the order as portable.
+`SUNION`, `SDIFF`, and `HSCAN`/`SSCAN`/`ZSCAN` pages unspecified. Redlite returns
+the set-like results sorted; `ZSCAN` walks in rank order. That is compatible
+with the contract (callers may not depend on order) and makes tests
+reproducible, but do not treat the order as portable.
 
 `SPOP` and `SRANDMEMBER` use Go's process-local PRNG. The selection is uniform
 enough for application use but is not cryptographically secure.
@@ -60,8 +71,8 @@ when the count exceeds the cardinality.
 ### Scanning
 
 `SCAN` cursors are indexes into a sorted snapshot of the keyspace, not hash
-buckets. `HSCAN` and `SSCAN` use the same approach over sorted field names and
-members. Consequences:
+buckets. `HSCAN`, `SSCAN` and `ZSCAN` use the same approach over sorted field
+names, members and rank order. Consequences:
 
 - Pagination is correct and deterministic for an unchanged keyspace.
 - `COUNT` limits how many keys are *examined*, not how many are returned —
@@ -97,8 +108,8 @@ runs. It is a debugging command, exactly as in Redis.
 - The append-only file is a sequence of RESP commands, which is the same shape
   Redis uses, but redlite does not read Redis' RDB files.
 - A rewrite emits typed commands: `SET`/`PXAT` for strings, `HSET` for hashes,
-  `RPUSH` for lists and `SADD` for sets, in chunks of 128 elements. Every type
-  round-trips through a restart.
+  `RPUSH` for lists, `SADD` for sets and `ZADD` for sorted sets, in chunks of
+  128 elements. Every type round-trips through a restart.
 - `BGREWRITEAOF` is synchronous today; the reply string is the Redis-compatible
   one so clients do not break.
 - `appendfsync everysec` can lose up to one second of acknowledged writes on a

@@ -78,6 +78,28 @@ check() {
   fi
 }
 
+# check3 is the same comparison over RESP3.
+check3() {
+  local mode=$1
+  shift
+  local redis_reply redlite_reply
+
+  if [ "$mode" = sort ]; then
+    redis_reply=$(redis-cli -3 -p "$REDIS_PORT" --raw "$@" 2>&1 | sort)
+    redlite_reply=$(redis-cli -3 -p "$REDLITE_PORT" --raw "$@" 2>&1 | sort)
+  else
+    redis_reply=$(redis-cli -3 -p "$REDIS_PORT" --raw "$@" 2>&1)
+    redlite_reply=$(redis-cli -3 -p "$REDLITE_PORT" --raw "$@" 2>&1)
+  fi
+
+  if [ "$redis_reply" != "$redlite_reply" ]; then
+    echo "MISMATCH (RESP3): $*" >&2
+    echo "  redis:   $(printf '%s' "$redis_reply" | tr '\n' '|')" >&2
+    echo "  redlite: $(printf '%s' "$redlite_reply" | tr '\n' '|')" >&2
+    FAILED=1
+  fi
+}
+
 start
 
 # Strings
@@ -146,6 +168,35 @@ check sort SUNION st st2
 check sort SDIFF st st2
 check raw SREM st a zz
 check raw SCARD st
+
+# ZSets
+check raw ZADD z 1 a 2 b 3 c
+check raw ZCARD z
+check raw ZSCORE z b
+check raw ZSCORE z missing
+check raw ZRANGE z 0 -1
+check raw ZRANGE z 0 -1 WITHSCORES
+check raw ZREVRANGE z 0 1
+check raw ZRANGEBYSCORE z 2 3
+check raw ZRANGEBYSCORE z "(2" "+inf" WITHSCORES
+check raw ZRANGEBYSCORE z -inf +inf LIMIT 1 1
+check raw ZREVRANGEBYSCORE z +inf -inf LIMIT 0 2
+check raw ZRANK z b
+check raw ZREVRANK z b
+check raw ZCOUNT z 2 3
+check raw ZINCRBY z 2 a
+check raw ZADD z CH 5 b
+check raw ZADD z NX 9 b
+check raw ZMSCORE z a b missing
+check raw ZREM z a
+check raw ZREMRANGEBYRANK z 0 0
+check raw ZCARD z
+
+# RESP3 reply shapes
+check raw HSET h3 a 1 b 2
+check3 raw HGETALL h3
+check raw ZADD z3 1 a 2 b
+check3 raw ZRANGE z3 0 -1 WITHSCORES
 
 # Errors
 check raw HSET h odd
