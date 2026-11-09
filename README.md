@@ -79,17 +79,19 @@ docker compose up --build
 
 **Pub/Sub**: `SUBSCRIBE` `UNSUBSCRIBE` `PSUBSCRIBE` `PUNSUBSCRIBE` `PUBLISH` `PUBSUB`
 
-**Introspection**: `CLIENT` `COMMAND` `CONFIG` `INFO` `TIME` `LASTSAVE` `SHUTDOWN` `BGREWRITEAOF` `SAVE` `BGSAVE`
+**Introspection**: `CLIENT` `COMMAND` `CONFIG` `INFO` `TIME` `LASTSAVE`
+`SHUTDOWN` `BGREWRITEAOF` `SAVE` `BGSAVE` `OBJECT` `MEMORY` `WAIT` `LOLWUT`
+`RESET`
 
 **Strings**: `GET` `SET` `SETNX` `SETEX` `PSETEX` `GETSET` `GETDEL` `GETEX`
 `MGET` `MSET` `MSETNX` `APPEND` `STRLEN` `GETRANGE` `SETRANGE` `INCR` `DECR`
 `INCRBY` `DECRBY` `INCRBYFLOAT`
 
 **Hashes**: `HSET` `HSETNX` `HMSET` `HGET` `HMGET` `HDEL` `HLEN` `HEXISTS`
-`HKEYS` `HVALS` `HGETALL` `HINCRBY` `HSCAN`
+`HKEYS` `HVALS` `HGETALL` `HSTRLEN` `HINCRBY` `HRANDFIELD` `HSCAN`
 
 **Lists**: `LPUSH` `RPUSH` `LPUSHX` `RPUSHX` `LPOP` `RPOP` `LLEN` `LINDEX`
-`LSET` `LRANGE` `LTRIM` `LREM` `LMOVE` `RPOPLPUSH`
+`LSET` `LRANGE` `LTRIM` `LREM` `LINSERT` `LPOS` `LMOVE` `RPOPLPUSH`
 
 **Blocking**: `BLPOP` `BRPOP` `BLMOVE` `BRPOPLPUSH`
 
@@ -100,13 +102,18 @@ docker compose up --build
 
 **Sorted sets**: `ZADD` `ZREM` `ZSCORE` `ZMSCORE` `ZINCRBY` `ZCARD` `ZCOUNT`
 `ZRANGE` `ZREVRANGE` `ZRANGEBYSCORE` `ZREVRANGEBYSCORE` `ZRANK` `ZREVRANK`
-`ZREMRANGEBYRANK` `ZREMRANGEBYSCORE` `ZSCAN`
+`ZREMRANGEBYRANK` `ZREMRANGEBYSCORE` `ZUNION` `ZINTER` `ZDIFF` `ZUNIONSTORE`
+`ZINTERSTORE` `ZDIFFSTORE` `ZPOPMIN` `ZPOPMAX` `ZRANDMEMBER` `ZSCAN`
+
+**Bitmaps**: `SETBIT` `GETBIT` `BITCOUNT` `BITPOS` `BITOP`
+
+**HyperLogLog**: `PFADD` `PFCOUNT` `PFMERGE`
 
 **Keys**: `DEL` `UNLINK` `EXISTS` `TYPE` `KEYS` `SCAN` `RANDOMKEY` `RENAME`
-`RENAMENX` `EXPIRE` `PEXPIRE` `EXPIREAT` `PEXPIREAT` `TTL` `PTTL` `PERSIST`
-`EXPIRETIME` `PEXPIRETIME` `TOUCH` `DBSIZE` `FLUSHDB` `FLUSHALL`
+`RENAMENX` `COPY` `EXPIRE` `PEXPIRE` `EXPIREAT` `PEXPIREAT` `TTL` `PTTL`
+`PERSIST` `EXPIRETIME` `PEXPIRETIME` `TOUCH` `DBSIZE` `FLUSHDB` `FLUSHALL`
 
-That is 133 commands. Every value carries an explicit type, so touching a hash
+That is 160 commands. Every value carries an explicit type, so touching a hash
 with `GET` or a string with `HGET` returns `WRONGTYPE` instead of guessing.
 See [docs/compatibility.md](docs/compatibility.md) for the differences you will
 hit and [ROADMAP.md](ROADMAP.md) for what comes next.
@@ -121,9 +128,9 @@ hit and [ROADMAP.md](ROADMAP.md) for what comes next.
 - **Append-only file** in RESP format. `appendfsync` supports `always`,
   `everysec` and `no`. A partial command at the tail of the file — the normal
   result of a crash — is truncated on load instead of failing startup.
-- **Snapshots**: `SAVE` and `BGSAVE` write a versioned, checksummed file with a
-  temporary file and an atomic rename. A corrupt snapshot refuses to load
-  instead of starting empty.
+- **Snapshots**: `SAVE` and `BGSAVE` write a standard Redis RDB file (version
+  10, plain encodings) with a temporary file and an atomic rename, so the file
+  can be handed to `redis-server`. Loading accepts Redis 7/8 RDB encodings.
 - **Lazy and active expiration**: reads treat an expired key as missing; a
   background sampler reaps expired keys the way Redis does.
 - **Deterministic recovery**: relative expiries are rewritten to absolute
@@ -156,6 +163,22 @@ hit and [ROADMAP.md](ROADMAP.md) for what comes next.
   over thousands of randomised operations.
 
 More detail in [docs/architecture.md](docs/architecture.md).
+
+## Migrating to Redis
+
+`SAVE` writes a standard Redis RDB file, so moving a running dataset to
+`redis-server` is a file copy:
+
+```console
+$ redis-cli -p 6379 SAVE
+$ cp dump.rdb /var/lib/redis/
+$ systemctl restart redis
+```
+
+The append-only file is a sequence of RESP commands, which Redis can load with
+`appendonly yes`. Starting redlite from an RDB written by Redis also works: the
+loader understands Redis 7 and 8 encodings (plain, intset, listpack and
+quicklist-of-listpacks) for strings, hashes, lists, sets and sorted sets.
 
 ## Embedding
 

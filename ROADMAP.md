@@ -77,6 +77,16 @@ duplicate effort.
 - [x] Minimal ACL introspection (`ACL WHOAMI`, `ACL LIST`, `ACL CAT`)
 - [x] TLS listener, optional client certificates, TLS replication
 
+## v0.11 — interoperability
+
+- [x] RDB writer that Redis can load (`SAVE`/`BGSAVE`)
+- [x] RDB reader for Redis 7/8 encodings (plain, intset, listpack, quicklist)
+- [x] Bitmaps, HyperLogLog, sorted-set algebra, `COPY`, `OBJECT`, `MEMORY`
+- [ ] Streams (`XADD`, `XREAD`, consumer groups)
+- [ ] Lua scripting (`EVAL`, `SCRIPT`)
+- [ ] Redis wire-compatible replication (RDB transfer, offsets, ACK)
+- [ ] Cluster mode and multiple databases
+
 ## Good first issues
 
 These are intentionally small and self-contained:

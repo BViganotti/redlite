@@ -4,6 +4,20 @@ All notable changes to redlite are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/).
 
+## [0.11.0] - 2026-11-09
+
+### Added
+
+- RDB interoperability: `SAVE`/`BGSAVE` write standard Redis RDB files
+  (`REDIS0010`, plain encodings, CRC-64), and startup loads RDB files written
+  by Redis 7/8, including intset, listpack and quicklist-of-listpacks values.
+- Bitmaps: `SETBIT`, `GETBIT`, `BITCOUNT` (BYTE/BIT), `BITPOS`, `BITOP`.
+- HyperLogLog: `PFADD`, `PFCOUNT`, `PFMERGE` (exact counts, opaque string).
+- Sorted-set algebra: `ZUNION`, `ZINTER`, `ZDIFF` and their `STORE` variants
+  with `WEIGHTS`/`AGGREGATE`, plus `ZPOPMIN`, `ZPOPMAX`, `ZRANDMEMBER`.
+- `HSTRLEN`, `HRANDFIELD`, `LINSERT`, `LPOS`, `COPY`, `OBJECT`, `MEMORY`,
+  `WAIT`, `LOLWUT`, `RESET`.
+
 ## [0.10.0] - 2026-11-09
 
 ### Changed

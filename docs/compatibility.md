@@ -198,27 +198,40 @@ runs. It is a debugging command, exactly as in Redis.
 
 ### Persistence
 
-- The append-only file is a sequence of RESP commands, which is the same shape
-  Redis uses, but redlite does not read Redis' RDB files.
-- Snapshots use a redlite-specific format: an 8-byte magic header, a format
-  version, the entries, and a CRC-32 checksum. They cannot be opened by Redis,
-  and real RDB files cannot be loaded here.
-- `SAVE` writes synchronously; `BGSAVE` copies the keyspace and writes in the
-  background. Both use a temporary file, fsync and an atomic rename.
+- `SAVE`/`BGSAVE` write a standard Redis RDB file (magic `REDIS0010`, plain
+  encodings for every type). `redis-check-rdb` accepts it and `redis-server`
+  loads it, which makes migration to Redis a file copy.
+- Loading accepts RDB versions 1–20 and the compact encodings Redis 7/8 emit:
+  intset, listpack, and quicklist-of-listpacks, including LZF-compressed
+  strings. Streams and module values are rejected with an error.
+- The checksum is CRC-64 (Jones polynomial). A corrupt file refuses to load.
+- `BGSAVE` copies the keyspace and writes in the background through a temporary
+  file and an atomic rename.
 - On startup, if `appendonly` is enabled the AOF is authoritative. Otherwise
-  `dir/dbfilename` is loaded when present, and a corrupt snapshot refuses to
-  start rather than silently losing data.
+  `dir/dbfilename` is loaded when present.
 - `SHUTDOWN SAVE` writes a snapshot before stopping.
-- A rewrite emits typed commands: `SET`/`PXAT` for strings, `HSET` for hashes,
-  `RPUSH` for lists, `SADD` for sets and `ZADD` for sorted sets, in chunks of
-  128 elements. Every type round-trips through a restart.
+- The AOF is RESP commands: `SET`/`PXAT`, `HSET`, `RPUSH`, `SADD`, `ZADD`,
+  `PEXPIREAT` and `MULTI`/`EXEC`. `redis-server --appendonly yes` can load it.
 - `BGREWRITEAOF` runs in the background: appends during the rewrite are
   buffered (up to 64 MiB) and folded into the new file before the atomic swap.
   If the buffer overflows, the rewrite aborts and the old log stays
   authoritative.
 - `appendfsync everysec` can lose up to one second of acknowledged writes on a
   hard crash. `always` does not.
-- There is no `SAVE`/`BGSAVE` yet.
+- Replication still uses redlite's internal snapshot format, so a real Redis
+  replica cannot sync from redlite yet.
+
+### HyperLogLog
+
+- `PFADD`/`PFCOUNT`/`PFMERGE` keep an exact set of 64-bit hashes inside an
+  opaque string. Counts are exact rather than approximate, but the payload is
+  not a Redis HLL: `PFCOUNT` on such a key will fail after copying it to Redis.
+
+### Bitmaps and OBJECT
+
+- Bitmap commands operate on ordinary strings with Redis' MSB-first bit order.
+- `OBJECT ENCODING` returns approximate names (`int`, `raw`, `listpack`,
+  `quicklist`, `hashtable`, `skiplist`, `intset`); it is informational only.
 
 ### Introspection
 
