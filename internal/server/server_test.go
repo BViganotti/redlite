@@ -373,6 +373,66 @@ func TestKeyCommands(t *testing.T) {
 	expectInt(t, c.do("RENAMENX", "renamed", "fresh"), 1)
 }
 
+func TestCopyCommand(t *testing.T) {
+	c := dial(t, newTestServer(t, nil))
+
+	expectInt(t, c.do("COPY", "missing", "dst"), 0)
+
+	expectSimple(t, c.do("SET", "src", "v", "EX", "100"), "OK")
+	expectInt(t, c.do("COPY", "src", "dst"), 1)
+	expectBulk(t, c.do("GET", "dst"), "v")
+	if ttl, ok := c.do("TTL", "dst").(int64); !ok || ttl < 1 || ttl > 100 {
+		t.Fatalf("COPY TTL = %v, want 1..100", c.do("TTL", "dst"))
+	}
+	expectSimple(t, c.do("SET", "src", "changed"), "OK")
+	expectBulk(t, c.do("GET", "dst"), "v")
+	expectBulk(t, c.do("GET", "src"), "changed")
+
+	expectSimple(t, c.do("SET", "dst2", "old"), "OK")
+	expectInt(t, c.do("COPY", "src", "dst2"), 0)
+	expectBulk(t, c.do("GET", "dst2"), "old")
+	expectInt(t, c.do("COPY", "src", "dst2", "REPLACE"), 1)
+	expectBulk(t, c.do("GET", "dst2"), "changed")
+
+	expectInt(t, c.do("HSET", "h", "f", "1"), 1)
+	expectInt(t, c.do("COPY", "h", "h2"), 1)
+	expectBulk(t, c.do("HGET", "h2", "f"), "1")
+	expectInt(t, c.do("HSET", "h", "f", "2"), 0)
+	expectBulk(t, c.do("HGET", "h2", "f"), "1")
+
+	expectInt(t, c.do("RPUSH", "l", "a", "b"), 2)
+	expectInt(t, c.do("COPY", "l", "l2"), 1)
+	expectInt(t, c.do("RPUSH", "l", "c"), 3)
+	expectInt(t, c.do("LLEN", "l2"), 2)
+	expectBulk(t, c.do("LINDEX", "l2", "1"), "b")
+
+	expectInt(t, c.do("SADD", "s", "m"), 1)
+	expectInt(t, c.do("COPY", "s", "s2"), 1)
+	expectInt(t, c.do("SISMEMBER", "s2", "m"), 1)
+
+	expectInt(t, c.do("ZADD", "z", "1.5", "m"), 1)
+	expectInt(t, c.do("COPY", "z", "z2"), 1)
+	expectSimple(t, c.do("TYPE", "z2"), "zset")
+	expectInt(t, c.do("ZCARD", "z2"), 1)
+
+	expectSimple(t, c.do("SET", "str", "x"), "OK")
+	expectInt(t, c.do("HSET", "hash", "f", "1"), 1)
+	expectInt(t, c.do("COPY", "str", "hash"), 0)
+	expectSimple(t, c.do("TYPE", "hash"), "hash")
+	expectInt(t, c.do("COPY", "str", "hash", "REPLACE"), 1)
+	expectSimple(t, c.do("TYPE", "hash"), "string")
+	expectBulk(t, c.do("GET", "hash"), "x")
+	expectError(t, c.do("HGET", "hash", "f"), "WRONGTYPE")
+
+	expectInt(t, c.do("COPY", "str", "db0", "DB", "0"), 1)
+	expectError(t, c.do("COPY", "str", "db1", "DB", "1"), "DB index is out of range")
+	expectError(t, c.do("COPY", "str", "dbx", "DB", "x"), "DB index is out of range")
+	expectError(t, c.do("COPY", "str", "db0", "DB"), "syntax error")
+	expectError(t, c.do("COPY", "str", "str"), "same")
+	expectError(t, c.do("COPY", "str", "y", "BOGUS"), "syntax error")
+	expectError(t, c.do("COPY", "str"), "wrong number of arguments")
+}
+
 func TestStringCommands(t *testing.T) {
 	c := dial(t, newTestServer(t, nil))
 

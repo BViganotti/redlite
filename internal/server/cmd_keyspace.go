@@ -19,6 +19,7 @@ func init() {
 	registerCommand("RANDOMKEY", 1, flagReadOnly, cmdRandomKey)
 	registerCommand("RENAME", 3, flagWrite, cmdRename)
 	registerCommand("RENAMENX", 3, flagWrite, cmdRenameNX)
+	registerCommand("COPY", -3, flagWrite, cmdCopy)
 	registerCommand("EXPIRE", -3, flagWrite|flagFast, expireHandler("expire", 1000, false))
 	registerCommand("PEXPIRE", -3, flagWrite|flagFast, expireHandler("pexpire", 1, false))
 	registerCommand("EXPIREAT", -3, flagWrite|flagFast, expireHandler("expireat", 1000, true))
@@ -129,6 +130,39 @@ func cmdRenameNX(c *client, args [][]byte) (result, error) {
 		return result{}, fmt.Errorf("ERR no such key")
 	}
 	if !c.srv.data.RenameNX(src, string(args[2])) {
+		return result{reply: intReply(0)}, nil
+	}
+	return result{reply: intReply(1), mutated: true}, nil
+}
+
+func cmdCopy(c *client, args [][]byte) (result, error) {
+	src, dst := string(args[1]), string(args[2])
+	if src == dst {
+		return result{}, fmt.Errorf("ERR source and destination objects are the same")
+	}
+
+	replace := false
+	seenDB := false
+	for i := 3; i < len(args); i++ {
+		switch strings.ToUpper(string(args[i])) {
+		case "REPLACE":
+			replace = true
+		case "DB":
+			if seenDB || i+1 >= len(args) {
+				return result{}, errSyntax
+			}
+			seenDB = true
+			i++
+			db, err := parseInt(args[i])
+			if err != nil || db != 0 {
+				return result{}, fmt.Errorf("ERR DB index is out of range")
+			}
+		default:
+			return result{}, errSyntax
+		}
+	}
+
+	if !c.srv.data.Copy(src, dst, replace) {
 		return result{reply: intReply(0)}, nil
 	}
 	return result{reply: intReply(1), mutated: true}, nil

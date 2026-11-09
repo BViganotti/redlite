@@ -33,6 +33,9 @@ func (t ValueType) String() string {
 // value is the sealed interface implemented by every stored type.
 type value interface {
 	kind() ValueType
+	// clone returns an independent copy, so a duplicated key cannot share
+	// mutable state with its source.
+	clone() value
 }
 
 type stringValue struct {
@@ -41,17 +44,37 @@ type stringValue struct {
 
 func (*stringValue) kind() ValueType { return TypeString }
 
+func (v *stringValue) clone() value {
+	return &stringValue{data: append([]byte(nil), v.data...)}
+}
+
 type hashValue struct {
 	fields map[string][]byte
 }
 
 func (*hashValue) kind() ValueType { return TypeHash }
 
+func (v *hashValue) clone() value {
+	c := &hashValue{fields: make(map[string][]byte, len(v.fields))}
+	for field, data := range v.fields {
+		c.fields[field] = append([]byte(nil), data...)
+	}
+	return c
+}
+
 type setValue struct {
 	members map[string]struct{}
 }
 
 func (*setValue) kind() ValueType { return TypeSet }
+
+func (v *setValue) clone() value {
+	c := &setValue{members: make(map[string]struct{}, len(v.members))}
+	for member := range v.members {
+		c.members[member] = struct{}{}
+	}
+	return c
+}
 
 // listValue is a growable ring buffer. Push and pop at both ends are O(1)
 // amortised, which is the property the list commands depend on.
@@ -65,6 +88,14 @@ func (*listValue) kind() ValueType { return TypeList }
 
 func newListValue() *listValue {
 	return &listValue{buf: make([][]byte, 8)}
+}
+
+func (v *listValue) clone() value {
+	c := newListValue()
+	for i := 0; i < v.size; i++ {
+		c.pushBack(append([]byte(nil), v.at(i)...))
+	}
+	return c
 }
 
 func (l *listValue) len() int { return l.size }

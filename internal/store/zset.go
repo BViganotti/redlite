@@ -51,6 +51,15 @@ type zsetValue struct {
 
 func (*zsetValue) kind() ValueType { return TypeZSet }
 
+func (v *zsetValue) clone() value {
+	c := newZSetValue()
+	for member, score := range v.dict {
+		c.dict[member] = score
+		c.list.insert(member, score)
+	}
+	return c
+}
+
 func newZSetValue() *zsetValue {
 	return &zsetValue{
 		dict: make(map[string]float64),

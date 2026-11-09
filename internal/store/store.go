@@ -805,6 +805,26 @@ func (s *Store) RenameNX(src, dst string) bool {
 	return true
 }
 
+// Copy duplicates src at dst, preserving the value and its expiry. When
+// replace is false and dst already exists, it reports false and changes
+// nothing. It reports false when src does not exist.
+func (s *Store) Copy(src, dst string, replace bool) bool {
+	locked := s.lockKeys([]string{src, dst})
+	defer s.unlockKeys(locked)
+
+	now := s.now()
+	e, ok := s.lookupWrite(s.shardFor(src), src, now)
+	if !ok {
+		return false
+	}
+	dstShard := s.shardFor(dst)
+	if _, exists := s.lookupWrite(dstShard, dst, now); exists && !replace {
+		return false
+	}
+	dstShard.data[dst] = s.newEntry(e.value.clone(), e.expireAt)
+	return true
+}
+
 // DBSize counts keys that are not expired.
 func (s *Store) DBSize() int64 {
 	keys, _ := s.KeyCounts()
