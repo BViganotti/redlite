@@ -21,3 +21,5 @@ dump.rdb
 .env
 .env.*
 !.env.example
+
+cpp/build/
