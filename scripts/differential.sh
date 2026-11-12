@@ -121,6 +121,11 @@ check_script() {
 
 start
 
+# The checks for features added after Redis 7 (SET value conditions) are only
+# meaningful when the reference server is new enough.
+REDIS_VERSION=$(redis-cli -p "$REDIS_PORT" INFO server | sed -n 's/^redis_version:\([0-9.]*\).*/\1/p' | tr -d '\r')
+REDIS_MINOR=$(printf '%s' "$REDIS_VERSION" | awk -F. '{ printf "%d%03d", $1, $2 }')
+
 # Strings
 check raw SET s hello
 check raw GET s
@@ -290,6 +295,128 @@ check raw COPY hs hscopy
 check raw HGET hscopy f1
 check raw COPY hs hscopy
 check raw COPY hs hscopy REPLACE
+
+# Set stores and algebra
+check raw SADD ss1 a b c
+check raw SADD ss2 b c d
+check raw SINTERSTORE ssi ss1 ss2
+check sort SMEMBERS ssi
+check raw SUNIONSTORE ssu ss1 ss2
+check sort SMEMBERS ssu
+check raw SDIFFSTORE ssd ss1 ss2
+check sort SMEMBERS ssd
+check raw SINTERCARD 2 ss1 ss2
+check raw SINTERCARD 2 ss1 ss2 LIMIT 1
+check raw SMOVE ss1 ss2 a
+check sort SMEMBERS ss1
+check sort SMEMBERS ss2
+check raw SMOVE ss1 ss2 nosuchmember
+
+# List multi-pop
+check raw RPUSH mlp a b c
+check raw LMPOP 1 mlp LEFT COUNT 2
+check raw LRANGE mlp 0 -1
+check raw LMPOP 1 mlp RIGHT
+check raw LMPOP 1 mlp LEFT
+check raw BLMPOP 0.01 1 mlp LEFT
+
+# Sorted-set lex, stores and multi-pop
+check raw ZADD zl 0 a 0 b 0 c 0 d
+check raw ZRANGE zl "[b" "[c" BYLEX
+check raw ZRANGE zl "[d" "[a" BYLEX REV
+check raw ZRANGE zl - + BYLEX LIMIT 1 2
+check raw ZRANGEBYLEX zl - +
+check raw ZREVRANGEBYLEX zl + -
+check raw ZLEXCOUNT zl - +
+check raw ZRANGESTORE zls zl "[a" "[b" BYLEX
+check raw ZRANGE zls 0 -1 WITHSCORES
+check raw ZINTERCARD 2 zl zls
+check raw ZREMRANGEBYLEX zl "[a" "[a"
+check raw ZADD zm 1 a 2 b 3 c
+check raw ZMPOP 1 zm MIN COUNT 2
+check raw ZRANGE zm 0 -1 WITHSCORES
+check raw ZMPOP 1 zm MAX
+check raw BZMPOP 0.01 1 zm MIN
+
+# Bitfield
+check raw BITFIELD bf SET u8 0 255 GET u8 0 INCRBY u8 0 10
+check raw GET bf
+check raw BITFIELD bf OVERFLOW SAT INCRBY u8 0 10
+check raw BITFIELD bf OVERFLOW FAIL INCRBY u8 0 10
+check raw BITFIELD bf SET i8 0 -5 GET i8 0
+check raw BITFIELD_RO bf GET u8 0
+check raw BITFIELD bf GET u64 0
+
+# LCS and SUBSTR
+check raw SET lcsa ohmytext
+check raw SET lcsb mynewtext
+check raw LCS lcsa lcsb
+check raw LCS lcsa lcsb LEN
+check raw LCS lcsa lcsb IDX
+check raw LCS lcsa lcsb IDX MINMATCHLEN 4
+check raw SUBSTR lcsa 0 1
+
+# SET value conditions (Redis 8.4+)
+if [ "${REDIS_MINOR:-0}" -ge 8004 ]; then
+  check raw SET cond v
+  check raw SET cond x IFEQ v
+  check raw GET cond
+  check raw SET cond y IFEQ v
+  check raw SET cond y IFNE v
+  check raw SET cond z IFDEQ 2225df3932692638
+  check raw SET cond z IFDEQ not-the-right-size
+fi
+
+# SORT
+check raw RPUSH sortme 3 1 2
+check raw SORT sortme
+check raw SORT sortme DESC LIMIT 0 2
+check raw SORT sortme STORE sorted
+check raw LRANGE sorted 0 -1
+check raw MSET w_1 10 w_2 5 w_3 1
+check raw SORT sortme BY w_*
+
+# Sharded pub/sub and operations
+check raw SPUBLISH nobody hello
+check raw PUBSUB SHARDCHANNELS
+check raw PUBSUB SHARDNUMSUB chan1 chan2
+check raw LATENCY LATEST
+check raw CLIENT KILL ID 999999
+check raw WAITAOF 0 0 0
+check raw CONFIG GET slowlog-log-slower-than
+
+
+# Geo
+check raw GEOADD geo 13.361389 38.115556 Palermo 15.087269 37.502669 Catania
+check raw GEOPOS geo Palermo Catania nope
+check raw GEODIST geo Palermo Catania
+check raw GEODIST geo Palermo Catania km
+check raw GEOHASH geo Palermo Catania
+check raw GEOSEARCH geo FROMLONLAT 15 37 BYRADIUS 200 km ASC
+check raw GEOSEARCH geo FROMLONLAT 15 37 BYRADIUS 200 km ASC WITHDIST WITHHASH
+check raw GEOSEARCH geo FROMMEMBER Palermo BYBOX 400 400 km ASC
+check raw GEORADIUS geo 15 37 200 km ASC WITHDIST
+check raw GEOSEARCHSTORE geodst geo FROMLONLAT 15 37 BYRADIUS 200 km ASC
+check raw ZRANGE geodst 0 -1
+check raw GEOADD geo 181 0 bad
+check raw GEODIST geo Palermo Catania yd
+
+# HyperLogLog (the payload is Redis' HYLL format; PFCOUNT must agree)
+check raw PFADD geo_hll a b c d e
+check raw PFCOUNT geo_hll
+check raw PFADD geo_hll a
+check raw PFCOUNT geo_hll
+check raw PFADD geo_hll2 c d e f
+check raw PFCOUNT geo_hll geo_hll2
+check raw PFMERGE geo_hllm geo_hll geo_hll2
+check raw PFCOUNT geo_hllm
+
+# ACL selectors and dry-run
+check raw ACL SETUSER diffacl on ">pw" "~a*" "+@read" "(+set ~b*)"
+check raw ACL DRYRUN diffacl GET a1
+check raw ACL DRYRUN diffacl SET b1 v
+check raw ACL DRYRUN diffacl SET a1 v
+check raw ACL DELUSER diffacl
 
 # Errors
 check raw HSET h odd
