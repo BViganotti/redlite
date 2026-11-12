@@ -145,7 +145,22 @@ func readValue(r *bufio.Reader) (any, error) {
 			return nil, err
 		}
 		return buf[:size], nil
-	case '*', '>':
+	case ',', '(', '=':
+		if line[0] == '=' {
+			// Verbatim strings carry a three-character format prefix that the
+			// tests do not care about.
+			size, err := strconv.Atoi(string(line[1:]))
+			if err != nil || size < 4 {
+				return nil, fmt.Errorf("invalid verbatim length")
+			}
+			buf := make([]byte, size+2)
+			if _, err := io.ReadFull(r, buf); err != nil {
+				return nil, err
+			}
+			return buf[4:size], nil
+		}
+		return []byte(line[1:]), nil
+	case '*', '>', '~':
 		count, err := strconv.Atoi(string(line[1:]))
 		if err != nil {
 			return nil, err
@@ -178,6 +193,17 @@ func readValue(r *bufio.Reader) (any, error) {
 			out[valueString(key)] = value
 		}
 		return out, nil
+	case '|':
+		pairs, err := strconv.Atoi(string(line[1:]))
+		if err != nil {
+			return nil, err
+		}
+		for i := 0; i < pairs*2; i++ {
+			if _, err := readValue(r); err != nil {
+				return nil, err
+			}
+		}
+		return readValue(r)
 	case '_':
 		return testNull{}, nil
 	case '#':

@@ -20,19 +20,37 @@ import (
 // returned; otherwise only the requested ones, in Redis' canonical order.
 func (s *Server) info(requested ...string) string {
 	sections := map[string]string{
-		"server":      s.infoServer(),
-		"clients":     s.infoClients(),
-		"memory":      infoMemory(),
-		"persistence": s.infoPersistence(),
-		"stats":       s.infoStats(),
-		"replication": s.infoReplication(),
-		"keyspace":    s.infoKeyspace(),
+		"server":       s.infoServer(),
+		"clients":      s.infoClients(),
+		"memory":       infoMemory(),
+		"persistence":  s.infoPersistence(),
+		"stats":        s.infoStats(),
+		"replication":  s.infoReplication(),
+		"cpu":          infoCPU(),
+		"commandstats": s.infoCommandStats(),
+		"latencystats": s.infoLatencyStats(),
+		"errorstats":   s.infoErrorStats(),
+		"cluster":      "# Cluster\r\ncluster_enabled:0\r\n",
+		"keyspace":     s.infoKeyspace(),
 	}
-	order := []string{"server", "clients", "memory", "persistence", "stats", "replication", "keyspace"}
+	order := []string{"server", "clients", "memory", "persistence", "stats", "replication",
+		"cpu", "commandstats", "latencystats", "errorstats", "cluster", "keyspace"}
 
-	if len(requested) == 0 || containsAny(requested, "all", "everything", "default") {
+	if containsAny(requested, "all", "everything") {
 		var b strings.Builder
 		for _, name := range order {
+			b.WriteString(sections[name])
+		}
+		return b.String()
+	}
+	if len(requested) == 0 || containsAny(requested, "default") {
+		// Redis' default INFO omits the per-command statistics sections.
+		skip := map[string]bool{"commandstats": true, "latencystats": true, "errorstats": true}
+		var b strings.Builder
+		for _, name := range order {
+			if skip[name] {
+				continue
+			}
 			b.WriteString(sections[name])
 		}
 		return b.String()
@@ -71,7 +89,7 @@ func (s *Server) infoClients() string {
 	b.WriteString("# Clients\r\n")
 	writeInfoField(&b, "connected_clients", strconv.Itoa(s.clientCount()))
 	writeInfoField(&b, "maxclients", strconv.FormatInt(s.maxClients.Load(), 10))
-	writeInfoField(&b, "blocked_clients", "0")
+	writeInfoField(&b, "blocked_clients", strconv.FormatInt(s.blockedClients.Load(), 10))
 	return b.String()
 }
 
@@ -148,7 +166,77 @@ func (s *Server) infoReplication() string {
 		writeInfoField(&b, "master_repl_offset", strconv.FormatInt(s.replOffset.Load(), 10))
 		writeInfoField(&b, "sync_full", strconv.FormatUint(s.fullResyncs.Load(), 10))
 	}
-	writeInfoField(&b, "master_replid", s.replID)
+	writeInfoField(&b, "master_replid", s.replicationID())
+	return b.String()
+}
+
+func infoCPU() string {
+	var b strings.Builder
+	b.WriteString("# CPU\r\n")
+	writeInfoField(&b, "used_cpu_sys", "0.000000")
+	writeInfoField(&b, "used_cpu_user", "0.000000")
+	writeInfoField(&b, "used_cpu_sys_children", "0.000000")
+	writeInfoField(&b, "used_cpu_user_children", "0.000000")
+	return b.String()
+}
+
+func (s *Server) infoCommandStats() string {
+	s.statsMu.Lock()
+	names := make([]string, 0, len(s.cmdStats))
+	for name := range s.cmdStats {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	b.WriteString("# Commandstats\r\n")
+	for _, name := range names {
+		stat := s.cmdStats[name]
+		perCall := 0.0
+		if stat.Calls > 0 {
+			perCall = float64(stat.Usec) / float64(stat.Calls)
+		}
+		fmt.Fprintf(&b, "cmdstat_%s:calls=%d,usec=%d,usec_per_call=%.2f,rejected_calls=0,failed_calls=%d\r\n",
+			name, stat.Calls, stat.Usec, perCall, stat.Failed)
+	}
+	s.statsMu.Unlock()
+	return b.String()
+}
+
+func (s *Server) infoLatencyStats() string {
+	s.statsMu.Lock()
+	names := make([]string, 0, len(s.cmdStats))
+	for name := range s.cmdStats {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	b.WriteString("# Latencystats\r\n")
+	for _, name := range names {
+		stat := s.cmdStats[name]
+		avg := 0.0
+		if stat.Calls > 0 {
+			avg = float64(stat.Usec) / float64(stat.Calls)
+		}
+		fmt.Fprintf(&b, "latency_percentiles_usec_%s:p50=%.3f,p99=%.3f,p99.9=%.3f\r\n",
+			name, avg, avg, avg)
+	}
+	s.statsMu.Unlock()
+	return b.String()
+}
+
+func (s *Server) infoErrorStats() string {
+	s.statsMu.Lock()
+	names := make([]string, 0, len(s.errStats))
+	for name := range s.errStats {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	b.WriteString("# Errorstats\r\n")
+	for _, name := range names {
+		fmt.Fprintf(&b, "errorstat_%s:count=%d\r\n", name, s.errStats[name])
+	}
+	s.statsMu.Unlock()
 	return b.String()
 }
 
@@ -218,17 +306,20 @@ func (s *Server) clientList() string {
 }
 
 func (c *client) infoLine() string {
-	channels, patterns := c.subCounts()
+	channels, patterns, shards := c.subCounts()
 	return fmt.Sprintf(
-		"id=%d addr=%s laddr=%s fd=-1 name=%s age=%d idle=0 flags=N db=0 sub=%d psub=%d ssub=0 multi=-1 qbuf=0 qbuf-free=0 argv-mem=0 obl=0 oll=0 omem=0 tot-mem=0 events=r cmd=%s user=default redir=-1 resp=%d",
+		"id=%d addr=%s laddr=%s fd=-1 name=%s age=%d idle=0 flags=%s db=0 sub=%d psub=%d ssub=%d multi=-1 qbuf=0 qbuf-free=0 argv-mem=0 obl=0 oll=0 omem=0 tot-mem=0 events=r cmd=%s user=%s redir=-1 resp=%d",
 		c.id,
 		c.addr,
 		c.localAddr(),
 		c.name(),
 		int64(time.Since(c.created).Seconds()),
+		c.flags(),
 		channels,
 		patterns,
+		shards,
 		c.lastCommand(),
+		c.user(),
 		c.protoNum(),
 	)
 }
@@ -267,6 +358,12 @@ func (s *Server) configSnapshot() map[string]string {
 			value, _ := s.notifyRaw.Load().(string)
 			return value
 		}(),
+		"slowlog-log-slower-than":      strconv.FormatInt(s.slowlogThreshold.Load(), 10),
+		"slowlog-max-len":              strconv.FormatInt(s.slowlogMaxLen.Load(), 10),
+		"slowlog-entry-max-argc":       strconv.FormatInt(s.slowlogMaxArgc.Load(), 10),
+		"slowlog-entry-max-string-len": strconv.FormatInt(s.slowlogMaxArgLen.Load(), 10),
+		"latency-monitor-threshold":    strconv.FormatInt(s.latencyThreshold.Load(), 10),
+		"acllog-max-len":               strconv.Itoa(s.acl.logMax()),
 	}
 	if s.aof != nil {
 		snapshot["appendfsync"] = string(s.aof.Policy())
@@ -318,6 +415,48 @@ func (s *Server) setConfig(key, value string) error {
 		}
 		s.notifyRaw.Store(value)
 		s.notifyConfig.Store(parseNotifyFlags(value))
+		return nil
+	case "slowlog-log-slower-than":
+		n, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return fmt.Errorf("ERR Invalid argument '%s' for CONFIG SET 'slowlog-log-slower-than'", value)
+		}
+		s.slowlogThreshold.Store(n)
+		return nil
+	case "slowlog-max-len":
+		n, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || n < 0 {
+			return fmt.Errorf("ERR Invalid argument '%s' for CONFIG SET 'slowlog-max-len'", value)
+		}
+		s.slowlogMaxLen.Store(n)
+		return nil
+	case "slowlog-entry-max-argc":
+		n, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || n < 0 {
+			return fmt.Errorf("ERR Invalid argument '%s' for CONFIG SET 'slowlog-entry-max-argc'", value)
+		}
+		s.slowlogMaxArgc.Store(n)
+		return nil
+	case "slowlog-entry-max-string-len":
+		n, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || n < 0 {
+			return fmt.Errorf("ERR Invalid argument '%s' for CONFIG SET 'slowlog-entry-max-string-len'", value)
+		}
+		s.slowlogMaxArgLen.Store(n)
+		return nil
+	case "acllog-max-len":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 {
+			return fmt.Errorf("ERR Invalid argument '%s' for CONFIG SET 'acllog-max-len'", value)
+		}
+		s.acl.setLogMax(n)
+		return nil
+	case "latency-monitor-threshold":
+		n, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || n < 0 {
+			return fmt.Errorf("ERR Invalid argument '%s' for CONFIG SET 'latency-monitor-threshold'", value)
+		}
+		s.latencyThreshold.Store(n)
 		return nil
 	case "appendonly", "dir", "bind", "port":
 		return fmt.Errorf("ERR CONFIG SET '%s' cannot be changed at runtime", key)

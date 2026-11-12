@@ -13,11 +13,12 @@ func init() {
 	registerCommand("LINSERT", 5, flagWrite, cmdLInsert)
 	registerCommand("LPOS", -3, flagReadOnly, cmdLPos)
 	registerCommand("COPY", -3, flagWrite, cmdCopy)
-	registerCommand("OBJECT", -2, flagReadOnly, cmdObject)
+	registerCommand("OBJECT", -2, 0, cmdObject)
 	registerCommand("RESET", 1, flagFast, cmdReset)
 	registerCommand("LOLWUT", -1, flagReadOnly, cmdLolwut)
-	registerCommand("WAIT", 3, flagReadOnly, cmdWait)
-	registerCommand("MEMORY", -2, flagReadOnly, cmdMemory)
+	registerCommand("WAIT", 3, 0, cmdWait)
+	registerCommand("WAITAOF", 4, flagBlocking, cmdWaitAOF)
+	registerCommand("MEMORY", -2, 0, cmdMemory)
 }
 
 func cmdHStrLen(c *client, args [][]byte) (result, error) {
@@ -212,16 +213,20 @@ func cmdObject(c *client, args [][]byte) (result, error) {
 
 func cmdReset(c *client, args [][]byte) (result, error) {
 	c.resetMulti()
+	c.replyMode = replyOn
+	c.srv.removeMonitor(c)
+	c.monitor = false
 	c.srv.pubsub.removeAll(c)
 	c.mu.Lock()
 	c.subs = nil
 	c.psubs = nil
+	c.ssubs = nil
 	c.cname = ""
 	c.mu.Unlock()
 	_ = c.setProto(2)
 	if c.srv.authRequired() {
 		c.authed = false
-		c.userName = "default"
+		c.setUser("default")
 	}
 	return result{reply: simpleReply("RESET")}, nil
 }
@@ -238,6 +243,29 @@ func cmdWait(c *client, args [][]byte) (result, error) {
 		return result{}, err
 	}
 	return result{reply: intReply(int64(c.srv.replicaCount()))}, nil
+}
+
+func cmdWaitAOF(c *client, args [][]byte) (result, error) {
+	local, err := parseInt(args[1])
+	if err != nil || local < 0 || local > 1 {
+		return result{}, fmt.Errorf("ERR value is out of range, value must between 0 and 1")
+	}
+	replicas, err := parseInt(args[2])
+	if err != nil || replicas < 0 || replicas > 1 {
+		return result{}, fmt.Errorf("ERR value is out of range, value must between 0 and 1")
+	}
+	if _, err := parseInt(args[3]); err != nil {
+		return result{}, err
+	}
+	if local > 0 && c.srv.aof == nil {
+		return result{}, fmt.Errorf("ERR WAITAOF cannot be used when numlocal is set but appendonly is disabled.")
+	}
+	var acked int64
+	if local > 0 && c.srv.aof != nil {
+		acked = 1
+	}
+	_ = replicas
+	return result{reply: arrayReply{intReply(acked), intReply(0)}}, nil
 }
 
 func cmdMemory(c *client, args [][]byte) (result, error) {

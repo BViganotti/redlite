@@ -16,13 +16,74 @@ type pubsubRegistry struct {
 	mu       sync.RWMutex
 	channels map[string]map[*client]struct{}
 	patterns map[string]map[*client]struct{}
+	shards   map[string]map[*client]struct{}
 }
 
 func newPubsubRegistry() *pubsubRegistry {
 	return &pubsubRegistry{
 		channels: make(map[string]map[*client]struct{}),
 		patterns: make(map[string]map[*client]struct{}),
+		shards:   make(map[string]map[*client]struct{}),
 	}
+}
+
+func (p *pubsubRegistry) ssubscribe(channel string, c *client) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.shards[channel] == nil {
+		p.shards[channel] = make(map[*client]struct{})
+	}
+	p.shards[channel][c] = struct{}{}
+}
+
+func (p *pubsubRegistry) sunsubscribe(channel string, c *client) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if subs, ok := p.shards[channel]; ok {
+		delete(subs, c)
+		if len(subs) == 0 {
+			delete(p.shards, channel)
+		}
+	}
+}
+
+// publishShard delivers a sharded message. Unlike PUBLISH, patterns do not
+// receive shard messages.
+func (p *pubsubRegistry) publishShard(channel string, payload []byte) int {
+	p.mu.RLock()
+	direct := make([]*client, 0, len(p.shards[channel]))
+	for c := range p.shards[channel] {
+		direct = append(direct, c)
+	}
+	p.mu.RUnlock()
+
+	deliveries := 0
+	for _, c := range direct {
+		message := pushReply{bulkReply("smessage"), bulkReply(channel), bulkReply(payload)}
+		if c.push(message) == nil {
+			deliveries++
+		}
+	}
+	return deliveries
+}
+
+func (p *pubsubRegistry) shardChannelNames(pattern string) []string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	out := make([]string, 0, len(p.shards))
+	for channel := range p.shards {
+		if pattern == "" || store.Match(pattern, channel) {
+			out = append(out, channel)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (p *pubsubRegistry) shardSubscriberCount(channel string) int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return len(p.shards[channel])
 }
 
 func (p *pubsubRegistry) subscribe(channel string, c *client) {
@@ -78,6 +139,12 @@ func (p *pubsubRegistry) removeAll(c *client) {
 		delete(subs, c)
 		if len(subs) == 0 {
 			delete(p.patterns, pattern)
+		}
+	}
+	for channel, subs := range p.shards {
+		delete(subs, c)
+		if len(subs) == 0 {
+			delete(p.shards, channel)
 		}
 	}
 }
@@ -155,6 +222,47 @@ func init() {
 	registerCommand("PUNSUBSCRIBE", -1, flagFast, cmdPUnsubscribe)
 	registerCommand("PUBLISH", 3, flagFast, cmdPublish)
 	registerCommand("PUBSUB", -2, flagFast, cmdPubsub)
+	registerCommand("SSUBSCRIBE", -2, flagFast, cmdSSubscribe)
+	registerCommand("SUNSUBSCRIBE", -1, flagFast, cmdSUnsubscribe)
+	registerCommand("SPUBLISH", 3, flagFast, cmdSPublish)
+}
+
+func cmdSSubscribe(c *client, args [][]byte) (result, error) {
+	out := make(multiReply, 0, len(args)-1)
+	for _, raw := range args[1:] {
+		channel := string(raw)
+		c.srv.pubsub.ssubscribe(channel, c)
+		count := c.addShardSubscription(channel)
+		out = append(out, pushReply{bulkReply("ssubscribe"), bulkReply(channel), intReply(int64(count))})
+	}
+	return result{reply: out}, nil
+}
+
+func cmdSUnsubscribe(c *client, args [][]byte) (result, error) {
+	var names []string
+	if len(args) == 1 {
+		names = c.shardSubscriptionNames()
+	} else {
+		names = make([]string, 0, len(args)-1)
+		for _, raw := range args[1:] {
+			names = append(names, string(raw))
+		}
+	}
+	if len(names) == 0 {
+		return result{reply: pushReply{bulkReply("sunsubscribe"), null, intReply(0)}}, nil
+	}
+	out := make(multiReply, 0, len(names))
+	for _, name := range names {
+		c.srv.pubsub.sunsubscribe(name, c)
+		count := c.removeShardSubscription(name)
+		out = append(out, pushReply{bulkReply("sunsubscribe"), bulkReply(name), intReply(int64(count))})
+	}
+	return result{reply: out}, nil
+}
+
+func cmdSPublish(c *client, args [][]byte) (result, error) {
+	deliveries := c.srv.pubsub.publishShard(string(args[1]), args[2])
+	return result{reply: intReply(int64(deliveries))}, nil
 }
 
 func cmdSubscribe(c *client, args [][]byte) (result, error) {
@@ -253,6 +361,23 @@ func cmdPubsub(c *client, args [][]byte) (result, error) {
 			return result{}, errSyntax
 		}
 		return result{reply: intReply(int64(c.srv.pubsub.patternCount()))}, nil
+
+	case "SHARDCHANNELS":
+		pattern := ""
+		if len(args) == 3 {
+			pattern = string(args[2])
+		} else if len(args) > 3 {
+			return result{}, errSyntax
+		}
+		return result{reply: bulkArrayString(c.srv.pubsub.shardChannelNames(pattern))}, nil
+
+	case "SHARDNUMSUB":
+		out := make(arrayReply, 0, (len(args)-2)*2)
+		for _, raw := range args[2:] {
+			channel := string(raw)
+			out = append(out, bulkReply(channel), intReply(int64(c.srv.pubsub.shardSubscriberCount(channel))))
+		}
+		return result{reply: out}, nil
 
 	case "HELP":
 		return result{reply: arrayReply{

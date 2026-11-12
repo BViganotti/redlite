@@ -44,6 +44,7 @@ type Server struct {
 	totalCmds       atomic.Uint64
 	aofErrors       atomic.Uint64
 	rejected        atomic.Uint64
+	blockedClients  atomic.Int64
 	lastSave        atomic.Int64
 	bgsaveActive    atomic.Bool
 	bgrewriteActive atomic.Bool
@@ -60,6 +61,7 @@ type Server struct {
 
 	replicasMu  sync.RWMutex
 	replicas    map[*client]*replicaLink
+	replIDMu    sync.RWMutex
 	replID      string
 	backlog     *replBacklog
 	replOffset  atomic.Int64
@@ -80,6 +82,25 @@ type Server struct {
 	notifyRaw    atomic.Value // string
 	notifyCh     chan string
 	notifyStop   chan struct{}
+
+	slowlogMu        sync.Mutex
+	slowlog          []slowlogEntry
+	slowlogNext      int64
+	slowlogThreshold atomic.Int64 // microseconds; negative disables
+	slowlogMaxLen    atomic.Int64
+	slowlogMaxArgc   atomic.Int64
+	slowlogMaxArgLen atomic.Int64
+
+	latencyMu        sync.Mutex
+	latency          map[string]*latencyStat
+	latencyThreshold atomic.Int64 // milliseconds
+
+	statsMu  sync.Mutex
+	cmdStats map[string]*cmdStat
+	errStats map[string]int64
+
+	monitorMu sync.Mutex
+	monitors  map[*client]struct{}
 }
 
 // New builds a server, opens the append-only file if enabled, and replays it.
@@ -110,7 +131,15 @@ func New(cfg config.Config, logger *slog.Logger, level *slog.LevelVar) (*Server,
 		replID:   newReplicationID(),
 		backlog:  newReplBacklog(cfg.ReplBacklogSize),
 		started:  time.Now(),
+		latency:  make(map[string]*latencyStat),
+		cmdStats: make(map[string]*cmdStat),
+		errStats: make(map[string]int64),
+		monitors: make(map[*client]struct{}),
 	}
+	srv.slowlogThreshold.Store(10000)
+	srv.slowlogMaxLen.Store(128)
+	srv.slowlogMaxArgc.Store(32)
+	srv.slowlogMaxArgLen.Store(128)
 	srv.maxClients.Store(int64(cfg.MaxClients))
 	srv.lastSave.Store(srv.started.Unix())
 	srv.rdbOK.Store(true)
@@ -325,6 +354,7 @@ func (s *Server) serveClient(c *client) {
 		delete(s.clients, c.id)
 		s.clientsMu.Unlock()
 		s.removeReplica(c)
+		s.removeMonitor(c)
 		s.pubsub.removeAll(c)
 		s.wg.Done()
 		s.logger.Debug("client disconnected", "id", c.id, "addr", c.addr)
@@ -357,13 +387,19 @@ func (s *Server) serveClient(c *client) {
 		s.totalCmds.Add(1)
 		c.cmds.Add(1)
 		c.setLastCommand(commandLabel(args))
+		s.feedMonitors(c, args)
 
+		suppress := c.beginCommandReply(args)
+		started := time.Now()
 		res, err := s.execute(c, args)
+		s.recordCommand(c, args, started, time.Since(started), err)
 		if err != nil {
-			if werr := c.sendReply(errorReply(err.Error())); werr != nil {
-				return
+			if !suppress {
+				if werr := c.sendReply(errorReply(err.Error())); werr != nil {
+					return
+				}
 			}
-		} else if res.reply != nil {
+		} else if res.reply != nil && !suppress {
 			if werr := c.sendReply(res.reply); werr != nil {
 				return
 			}
@@ -421,6 +457,16 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 func (s *Server) nowMs() int64 { return time.Now().UnixMilli() }
+
+func (s *Server) beginBlock(c *client) {
+	c.blocked.Store(true)
+	s.blockedClients.Add(1)
+}
+
+func (s *Server) endBlock(c *client) {
+	c.blocked.Store(false)
+	s.blockedClients.Add(-1)
+}
 
 // buildTLSConfig loads the listener certificate and, when a CA is configured,
 // requires client certificates.

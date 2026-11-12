@@ -96,6 +96,36 @@ func (s *Server) notifyCommand(args [][]byte, res result) {
 		s.emitKeyspaceEvent(args[2], []byte("rpush"), 'l')
 		return
 
+	case "SMOVE":
+		s.emitKeyspaceEvent(args[1], []byte("srem"), 's')
+		s.emitKeyspaceEvent(args[2], []byte("sadd"), 's')
+		return
+
+	case "LMPOP", "BLMPOP":
+		if len(res.rewrite) >= 2 {
+			event := "lpop"
+			if strings.EqualFold(string(res.rewrite[0]), "RPOP") {
+				event = "rpop"
+			}
+			s.emitKeyspaceEvent(res.rewrite[1], []byte(event), 'l')
+		}
+		return
+
+	case "SORT":
+		for _, raw := range args {
+			if strings.EqualFold(string(raw), "STORE") {
+				// Redis emits sortstore for the destination.
+				for i := 1; i+1 < len(args); i++ {
+					if strings.EqualFold(string(args[i]), "STORE") {
+						s.emitKeyspaceEvent(args[i+1], []byte("sortstore"), 'l')
+						break
+					}
+				}
+				break
+			}
+		}
+		return
+
 	case "BLPOP", "BRPOP":
 		if len(res.rewrite) == 2 {
 			event := "lpop"
@@ -159,6 +189,16 @@ func commandEvent(name string) (string, byte, bool) {
 		"SADD":             {"sadd", 's'},
 		"SREM":             {"srem", 's'},
 		"SPOP":             {"spop", 's'},
+		"SINTERSTORE":      {"sinterstore", 's'},
+		"SUNIONSTORE":      {"sunionstore", 's'},
+		"SDIFFSTORE":       {"sdiffstore", 's'},
+		"SETBIT":           {"setbit", '$'},
+		"BITFIELD":         {"setbit", '$'},
+		"BITOP":            {"set", '$'},
+		"RESTORE":          {"restore", 'g'},
+		"ZRANGESTORE":      {"zrangestore", 'z'},
+		"ZMPOP":            {"zrem", 'z'},
+		"BZMPOP":           {"zrem", 'z'},
 		"ZADD":             {"zadd", 'z'},
 		"ZREM":             {"zrem", 'z'},
 		"ZINCRBY":          {"zincrby", 'z'},

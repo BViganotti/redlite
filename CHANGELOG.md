@@ -4,6 +4,64 @@ All notable changes to redlite are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/).
 
+## [0.13.0] - 2026-11-10
+
+### Added
+
+- Geo command family: `GEOADD`, `GEOPOS`, `GEODIST`, `GEOHASH`, `GEOSEARCH`,
+  `GEOSEARCHSTORE`, `GEORADIUS[_RO]` and `GEORADIUSBYMEMBER[_RO]`, backed by
+  Redis' 52-bit geohash scores in ordinary sorted sets.
+- `MIGRATE` with `COPY`, `REPLACE`, `AUTH`, `AUTH2`, `KEYS`, TTL preservation
+  and Redis-compatible `NOKEY`/count replies. Includes a full RESP2/RESP3 reply
+  decoder in `internal/resp`.
+- Redis-compatible HyperLogLog payloads (`HYLL`): MurmurHash64A hashing, dense
+  and sparse representations, cardinality cache and the Ertl estimator. Values
+  move both ways between redlite and Redis.
+- ACL selectors (`ACL SETUSER user (+set ~prefix:*) ...`), `ACL DRYRUN`,
+  `ACL LOG [count|RESET]`, `ACL CAT <category>` and `ACL GENPASS`.
+- `acllog-max-len` and richer `ACL GETUSER`/`ACL LIST` output.
+
+### Changed
+
+- The differential suite now covers geo, HyperLogLog and ACL selector behavior
+  against Redis 8.8.
+
+## [0.12.0] - 2026-11-09
+
+### Added
+
+- Set stores and algebra: `SINTERSTORE`, `SUNIONSTORE`, `SDIFFSTORE`, `SMOVE`
+  and `SINTERCARD`.
+- Multi-key pops: `LMPOP`, `BLMPOP`, `ZMPOP`, `BZMPOP`.
+- Sorted-set lex family (`ZRANGEBYLEX`, `ZREVRANGEBYLEX`, `ZLEXCOUNT`,
+  `ZREMRANGEBYLEX`), `ZRANGESTORE`, `ZINTERCARD`, and the unified
+  `ZRANGE ... BYSCORE|BYLEX [REV] [LIMIT]`.
+- `BITFIELD` and `BITFIELD_RO` with `GET`, `SET`, `INCRBY`, unsigned/signed
+  1-63/64-bit fields and `WRAP`/`SAT`/`FAIL` overflow modes.
+- `LCS`, `SUBSTR`, and `SET` value conditions `IFEQ`, `IFNE`, `IFDEQ`, `IFDNE`
+  (XXH3-64 digests).
+- `SORT` / `SORT_RO` with `BY`, `GET`, `LIMIT`, `ALPHA`, `ASC`/`DESC` and
+  `STORE`.
+- `DUMP` / `RESTORE` using Redis' payload format (CRC-64), interoperable with
+  Redis for strings, hashes, lists, sets and sorted sets.
+- Sharded pub/sub: `SSUBSCRIBE`, `SUNSUBSCRIBE`, `SPUBLISH`, `PUBSUB
+  SHARDCHANNELS` and `PUBSUB SHARDNUMSUB`.
+- Operations: `SLOWLOG`, `LATENCY`, `DEBUG` subcommands, `MODULE LIST`,
+  `MONITOR`, `CLIENT KILL`, `CLIENT REPLY`, `WAITAOF`, `COMMAND DOCS` and
+  `COMMAND LIST FILTERBY`.
+- RESP3 sets and doubles, plus encoder support for attributes, big numbers and
+  verbatim strings.
+- `INFO` sections for commandstats, latencystats, errorstats, cpu and cluster.
+- Randomized differential checks against Redis 8.8 for bitfields, LCS,
+  sorted-set ranges, SORT and DUMP/RESTORE.
+
+### Changed
+
+- `SMEMBERS`, `SINTER`, `SUNION`, `SDIFF` and `SPOP` with a count now return
+  RESP3 sets; scores are RESP3 doubles.
+- `ZMPOP`/`BZMPOP` use Redis' nested `[member, score]` reply shape.
+- `CONFIG GET` exposes the slowlog and latency monitor parameters.
+
 ## [0.11.0] - 2026-11-09
 
 ### Added

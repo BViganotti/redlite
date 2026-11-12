@@ -8,7 +8,7 @@ import (
 
 func init() {
 	registerCommand("MULTI", 1, flagFast, cmdMulti)
-	registerCommand("EXEC", 1, flagWrite, cmdExec)
+	registerCommand("EXEC", 1, 0, cmdExec)
 	registerCommand("DISCARD", 1, flagFast, cmdDiscard)
 	registerCommand("WATCH", -2, flagFast, cmdWatch)
 	registerCommand("UNWATCH", 1, flagFast, cmdUnwatch)

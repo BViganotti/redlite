@@ -2,12 +2,14 @@
 
 [![ci](https://github.com/BViganotti/redlite/actions/workflows/ci.yml/badge.svg)](https://github.com/BViganotti/redlite/actions/workflows/ci.yml)
 
-A Redis-compatible in-memory data store, written from scratch in Go.
+A Redis-compatible in-memory data store, written from scratch in Go, with a
+C++17 port in [cpp/](cpp/) for the core server.
 
 Redlite speaks RESP2 and RESP3 over TCP, so `redis-cli` and ordinary Redis client
 libraries work against it unchanged. It is not trying to replace Redis in
 production. It is trying to be the Redis you can read end to end: one Go binary,
-no dependencies, and a protocol small enough to understand in an afternoon.
+a small XXH3 dependency for `SET` digest conditions, and a protocol small
+enough to understand in an afternoon.
 
 ```console
 $ go run ./cmd/redlite
@@ -77,43 +79,52 @@ docker compose up --build
 
 **Transactions**: `MULTI` `EXEC` `DISCARD` `WATCH` `UNWATCH`
 
-**Pub/Sub**: `SUBSCRIBE` `UNSUBSCRIBE` `PSUBSCRIBE` `PUNSUBSCRIBE` `PUBLISH` `PUBSUB`
+**Pub/Sub**: `SUBSCRIBE` `UNSUBSCRIBE` `PSUBSCRIBE` `PUNSUBSCRIBE` `SSUBSCRIBE`
+`SUNSUBSCRIBE` `PUBLISH` `SPUBLISH` `PUBSUB`
 
 **Introspection**: `CLIENT` `COMMAND` `CONFIG` `INFO` `TIME` `LASTSAVE`
-`SHUTDOWN` `BGREWRITEAOF` `SAVE` `BGSAVE` `OBJECT` `MEMORY` `WAIT` `LOLWUT`
-`RESET`
+`SHUTDOWN` `BGREWRITEAOF` `SAVE` `BGSAVE` `OBJECT` `MEMORY` `WAIT` `WAITAOF`
+`LOLWUT` `RESET` `SLOWLOG` `LATENCY` `DEBUG` `MODULE` `MONITOR` `ACL`
 
 **Strings**: `GET` `SET` `SETNX` `SETEX` `PSETEX` `GETSET` `GETDEL` `GETEX`
 `MGET` `MSET` `MSETNX` `APPEND` `STRLEN` `GETRANGE` `SETRANGE` `INCR` `DECR`
-`INCRBY` `DECRBY` `INCRBYFLOAT`
+`INCRBY` `DECRBY` `INCRBYFLOAT` `LCS` `SUBSTR`
 
 **Hashes**: `HSET` `HSETNX` `HMSET` `HGET` `HMGET` `HDEL` `HLEN` `HEXISTS`
 `HKEYS` `HVALS` `HGETALL` `HSTRLEN` `HINCRBY` `HRANDFIELD` `HSCAN`
 
 **Lists**: `LPUSH` `RPUSH` `LPUSHX` `RPUSHX` `LPOP` `RPOP` `LLEN` `LINDEX`
-`LSET` `LRANGE` `LTRIM` `LREM` `LINSERT` `LPOS` `LMOVE` `RPOPLPUSH`
+`LSET` `LRANGE` `LTRIM` `LREM` `LINSERT` `LPOS` `LMOVE` `RPOPLPUSH` `LMPOP`
 
-**Blocking**: `BLPOP` `BRPOP` `BLMOVE` `BRPOPLPUSH`
+**Blocking**: `BLPOP` `BRPOP` `BLMOVE` `BRPOPLPUSH` `BLMPOP` `BZMPOP`
 
 **Replication**: `REPLICAOF` `SLAVEOF` `PSYNC` `REPLCONF`
 
 **Sets**: `SADD` `SREM` `SCARD` `SISMEMBER` `SMISMEMBER` `SMEMBERS` `SINTER`
-`SUNION` `SDIFF` `SPOP` `SRANDMEMBER` `SSCAN`
+`SUNION` `SDIFF` `SPOP` `SRANDMEMBER` `SSCAN` `SMOVE` `SINTERSTORE`
+`SUNIONSTORE` `SDIFFSTORE` `SINTERCARD`
 
 **Sorted sets**: `ZADD` `ZREM` `ZSCORE` `ZMSCORE` `ZINCRBY` `ZCARD` `ZCOUNT`
 `ZRANGE` `ZREVRANGE` `ZRANGEBYSCORE` `ZREVRANGEBYSCORE` `ZRANK` `ZREVRANK`
 `ZREMRANGEBYRANK` `ZREMRANGEBYSCORE` `ZUNION` `ZINTER` `ZDIFF` `ZUNIONSTORE`
 `ZINTERSTORE` `ZDIFFSTORE` `ZPOPMIN` `ZPOPMAX` `ZRANDMEMBER` `ZSCAN`
+`ZRANGEBYLEX` `ZREVRANGEBYLEX` `ZLEXCOUNT` `ZREMRANGEBYLEX` `ZRANGESTORE`
+`ZINTERCARD` `ZMPOP`
 
-**Bitmaps**: `SETBIT` `GETBIT` `BITCOUNT` `BITPOS` `BITOP`
+**Bitmaps**: `SETBIT` `GETBIT` `BITCOUNT` `BITPOS` `BITOP` `BITFIELD`
+`BITFIELD_RO`
 
-**HyperLogLog**: `PFADD` `PFCOUNT` `PFMERGE`
+**HyperLogLog**: `PFADD` `PFCOUNT` `PFMERGE` (Redis `HYLL` format)
+
+**Geo**: `GEOADD` `GEOPOS` `GEODIST` `GEOHASH` `GEOSEARCH` `GEOSEARCHSTORE`
+`GEORADIUS` `GEORADIUS_RO` `GEORADIUSBYMEMBER` `GEORADIUSBYMEMBER_RO`
 
 **Keys**: `DEL` `UNLINK` `EXISTS` `TYPE` `KEYS` `SCAN` `RANDOMKEY` `RENAME`
 `RENAMENX` `COPY` `EXPIRE` `PEXPIRE` `EXPIREAT` `PEXPIREAT` `TTL` `PTTL`
 `PERSIST` `EXPIRETIME` `PEXPIRETIME` `TOUCH` `DBSIZE` `FLUSHDB` `FLUSHALL`
+`SORT` `SORT_RO` `DUMP` `RESTORE` `MIGRATE`
 
-That is 160 commands. Every value carries an explicit type, so touching a hash
+That is 203 commands. Every value carries an explicit type, so touching a hash
 with `GET` or a string with `HGET` returns `WRONGTYPE` instead of guessing.
 See [docs/compatibility.md](docs/compatibility.md) for the differences you will
 hit and [ROADMAP.md](ROADMAP.md) for what comes next.

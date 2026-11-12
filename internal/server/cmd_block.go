@@ -14,6 +14,7 @@ func init() {
 	registerCommand("BRPOP", -3, flagWrite|flagBlocking, cmdBRPop)
 	registerCommand("BLMOVE", 6, flagWrite|flagBlocking, cmdBLMove)
 	registerCommand("BRPOPLPUSH", 4, flagWrite|flagBlocking, cmdBRPopLPush)
+	registerCommand("BLMPOP", -5, flagWrite|flagBlocking, cmdBLMPop)
 	registerCommand("LMOVE", 5, flagWrite, cmdLMove)
 	registerCommand("RPOPLPUSH", 3, flagWrite, cmdRPopLPush)
 }
@@ -39,6 +40,18 @@ func parseBlockTimeout(arg []byte) (time.Duration, error) {
 		return 0, errTimeoutNotFloat
 	}
 	return time.Duration(value * float64(time.Second)), nil
+}
+
+// waitBlocked parks the client until the waiter fires or the timeout expires.
+func waitBlocked(c *client, wake <-chan struct{}, timeout <-chan time.Time) bool {
+	c.srv.beginBlock(c)
+	defer c.srv.endBlock(c)
+	select {
+	case <-wake:
+		return true
+	case <-timeout:
+		return false
+	}
 }
 
 func cmdBLPop(c *client, args [][]byte) (result, error) {
@@ -118,10 +131,9 @@ func blockingPop(c *client, args [][]byte, left bool) (result, error) {
 			return poppedResult(key, value, popCommand), nil
 		}
 
-		select {
-		case <-waiter.C:
+		if waitBlocked(c, waiter.C, timeoutCh) {
 			c.srv.data.CancelWait(waiter)
-		case <-timeoutCh:
+		} else {
 			c.srv.data.CancelWait(waiter)
 			return result{reply: nullArrayReply{}}, nil
 		}
@@ -133,6 +145,61 @@ func poppedResult(key string, value []byte, popCommand string) result {
 		reply:   arrayReply{bulkReply(key), bulkReply(value)},
 		mutated: true,
 		rewrite: [][]byte{[]byte(popCommand), []byte(key)},
+	}
+}
+
+func cmdBLMPop(c *client, args [][]byte) (result, error) {
+	timeout, err := parseBlockTimeout(args[1])
+	if err != nil {
+		return result{}, err
+	}
+	keys, left, count, err := parseMPop(args, 2)
+	if err != nil {
+		return result{}, err
+	}
+
+	try := func() (string, [][]byte, error) {
+		release := c.enterReadGate()
+		defer release()
+		return c.srv.data.LMPop(keys, left, count)
+	}
+
+	var timeoutCh <-chan time.Time
+	if timeout > 0 {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		timeoutCh = timer.C
+	}
+
+	for {
+		key, values, err := try()
+		if err != nil {
+			return result{}, err
+		}
+		if key != "" {
+			return result{reply: mpOpReply(key, values), mutated: true, rewrite: lmpopRewrite(key, values, left)}, nil
+		}
+		if c.executing || c.srv.shuttingDown.Load() {
+			return result{reply: nullArrayReply{}}, nil
+		}
+
+		waiter := c.srv.data.Wait(keys)
+		key, values, err = try()
+		if err != nil {
+			c.srv.data.CancelWait(waiter)
+			return result{}, err
+		}
+		if key != "" {
+			c.srv.data.CancelWait(waiter)
+			return result{reply: mpOpReply(key, values), mutated: true, rewrite: lmpopRewrite(key, values, left)}, nil
+		}
+
+		if waitBlocked(c, waiter.C, timeoutCh) {
+			c.srv.data.CancelWait(waiter)
+		} else {
+			c.srv.data.CancelWait(waiter)
+			return result{reply: nullArrayReply{}}, nil
+		}
 	}
 }
 
@@ -240,10 +307,9 @@ func blockingMove(c *client, source, destination string, fromLeft, toLeft bool, 
 			return result{reply: bulkReply(value), mutated: true, rewrite: rewrite}, nil
 		}
 
-		select {
-		case <-waiter.C:
+		if waitBlocked(c, waiter.C, timeoutCh) {
 			c.srv.data.CancelWait(waiter)
-		case <-timeoutCh:
+		} else {
 			c.srv.data.CancelWait(waiter)
 			return result{reply: null}, nil
 		}

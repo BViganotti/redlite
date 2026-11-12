@@ -20,7 +20,7 @@ import (
 
 func init() {
 	registerCommand("REPLCONF", -1, flagAdmin, cmdReplConf)
-	registerCommand("PSYNC", -1, flagAdmin|flagNoGate, cmdPSync)
+	registerCommand("PSYNC", -3, flagAdmin|flagNoGate, cmdPSync)
 	registerCommand("REPLICAOF", 3, flagAdmin, cmdReplicaOf)
 	registerCommand("SLAVEOF", 3, flagAdmin, cmdReplicaOf)
 }
@@ -47,6 +47,18 @@ func newReplicationID() string {
 	return hex.EncodeToString(raw[:])
 }
 
+func (s *Server) replicationID() string {
+	s.replIDMu.RLock()
+	defer s.replIDMu.RUnlock()
+	return s.replID
+}
+
+func (s *Server) setReplicationID(id string) {
+	s.replIDMu.Lock()
+	s.replID = id
+	s.replIDMu.Unlock()
+}
+
 func cmdReplConf(c *client, args [][]byte) (result, error) {
 	// Replicas ACK offsets; that is a no-reply command on the wire.
 	if len(args) >= 2 && strings.EqualFold(string(args[1]), "ACK") {
@@ -63,7 +75,7 @@ func cmdPSync(c *client, args [][]byte) (result, error) {
 	srv.txMu.Lock()
 	defer srv.txMu.Unlock()
 
-	if len(args) >= 3 && string(args[1]) == srv.replID {
+	if len(args) >= 3 && string(args[1]) == srv.replicationID() {
 		offset, err := strconv.ParseInt(string(args[2]), 10, 64)
 		if err == nil {
 			if data, ok := srv.backlog.since(offset); ok {
@@ -93,7 +105,7 @@ func cmdPSync(c *client, args [][]byte) (result, error) {
 	defer func() { _ = c.conn.SetWriteDeadline(time.Time{}) }()
 
 	offset := srv.backlog.end()
-	header := fmt.Sprintf("+FULLRESYNC %s %d\r\n$%d\r\n", srv.replID, offset, snapshot.Len())
+	header := fmt.Sprintf("+FULLRESYNC %s %d\r\n$%d\r\n", srv.replicationID(), offset, snapshot.Len())
 	if _, err := c.conn.Write([]byte(header)); err != nil {
 		return result{}, err
 	}

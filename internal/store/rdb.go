@@ -25,6 +25,131 @@ var (
 	ErrRDBUnsupported = errors.New("unsupported RDB encoding")
 )
 
+// dumpVersion is the RDB object version embedded in DUMP payloads. Version 9
+// is readable by every Redis release from 5 onward.
+const dumpVersion = 9
+
+// Errors returned by RESTORE.
+var (
+	ErrDumpPayload = errors.New("DUMP payload version or checksum are wrong")
+	ErrBusyKey     = errors.New("BUSYKEY Target key name already exists.")
+)
+
+// Dump encodes one key in the Redis DUMP payload format.
+func (s *Store) Dump(key string) ([]byte, bool, error) {
+	now := s.now()
+	sh := s.lockRead(key)
+	defer s.unlockRead(sh)
+
+	e, ok := s.lookupRead(sh, key, now)
+	if !ok {
+		return nil, false, nil
+	}
+
+	writer := &rdbWriter{w: io.Discard}
+	entry := snapshotEntry{key: key, kind: e.value.kind(), expireAt: e.expireAt}
+	switch v := e.value.(type) {
+	case *stringValue:
+		entry.str = v.data
+	case *hashValue:
+		entry.hash = v.fields
+	case *listValue:
+		entry.list = v.toSlice()
+	case *setValue:
+		entry.set = sortedSetKeys(v.members)
+	case *zsetValue:
+		entry.zset = v.list.all()
+	}
+	writeDumpObject(writer, entry)
+	if writer.err != nil {
+		return nil, false, writer.err
+	}
+
+	payload := append([]byte(nil), writer.buf...)
+	var version [2]byte
+	binary.LittleEndian.PutUint16(version[:], dumpVersion)
+	payload = append(payload, version[:]...)
+	sum := crc64(payload)
+	var checksum [8]byte
+	binary.LittleEndian.PutUint64(checksum[:], sum)
+	payload = append(payload, checksum[:]...)
+	return payload, true, nil
+}
+
+func writeDumpObject(w *rdbWriter, entry snapshotEntry) {
+	switch entry.kind {
+	case TypeString:
+		w.byte(0)
+		w.string(entry.str)
+	case TypeList:
+		w.byte(1)
+		w.length(len(entry.list))
+		for _, item := range entry.list {
+			w.string(item)
+		}
+	case TypeSet:
+		w.byte(2)
+		w.length(len(entry.set))
+		for _, member := range entry.set {
+			w.string([]byte(member))
+		}
+	case TypeZSet:
+		w.byte(5)
+		w.length(len(entry.zset))
+		for _, member := range entry.zset {
+			w.string([]byte(member.Member))
+			w.double(member.Score)
+		}
+	case TypeHash:
+		w.byte(4)
+		w.length(len(entry.hash))
+		for _, field := range sortedKeys(entry.hash) {
+			w.string([]byte(field))
+			w.string(entry.hash[field])
+		}
+	}
+}
+
+// Restore decodes a DUMP payload and installs it at key. expireAt is an
+// absolute unix-millisecond deadline, or zero for no expiry.
+func (s *Store) Restore(key string, payload []byte, expireAt int64, replace bool) error {
+	if len(payload) < 11 {
+		return ErrDumpPayload
+	}
+	body := payload[:len(payload)-10]
+	version := binary.LittleEndian.Uint16(payload[len(payload)-10 : len(payload)-8])
+	if version > 20 {
+		return ErrDumpPayload
+	}
+	want := binary.LittleEndian.Uint64(payload[len(payload)-8:])
+	if want != 0 && crc64(payload[:len(payload)-8]) != want {
+		return ErrDumpPayload
+	}
+	if len(body) < 1 {
+		return ErrDumpPayload
+	}
+
+	reader := &rdbReader{r: bytes.NewReader(body[1:])}
+	parsed, err := reader.readObject(body[0])
+	if err != nil {
+		return ErrDumpPayload
+	}
+
+	now := s.now()
+	sh := s.lockWrite(key)
+	defer s.unlockWrite(sh)
+	if _, exists := s.lookupWrite(sh, key, now); exists && !replace {
+		return ErrBusyKey
+	}
+	if expireAt != 0 && expireAt <= now {
+		delete(sh.data, key)
+		return nil
+	}
+	sh.data[key] = s.newEntry(parsed, expireAt)
+	s.sets.Add(1)
+	return nil
+}
+
 // CRC64 (Jones polynomial) as used by Redis.
 var (
 	crc64Table [256]uint64
@@ -419,56 +544,82 @@ func (r *rdbReader) object(kind byte) (string, value, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	key := string(keyBytes)
+	v, err := r.readObject(kind)
+	if err != nil {
+		return "", nil, err
+	}
+	return string(keyBytes), v, nil
+}
 
+// checkCount rejects a collection length that cannot possibly fit in the
+// remaining payload, preventing a hostile DUMP/RESTORE from allocating
+// gigabytes for an empty body.
+func (r *rdbReader) checkCount(count int) error {
+	if count < 0 || count > r.r.Len() {
+		return ErrRDBFormat
+	}
+	return nil
+}
+
+// readObject decodes an object body without its key.
+func (r *rdbReader) readObject(kind byte) (value, error) {
 	switch kind {
 	case 0: // string
 		data, err := r.string()
 		if err != nil {
-			return "", nil, err
+			return nil, err
 		}
-		return key, &stringValue{data: data}, nil
+		return &stringValue{data: data}, nil
 
 	case 1: // list
 		count, _, err := r.length()
 		if err != nil {
-			return "", nil, err
+			return nil, err
+		}
+		if err := r.checkCount(count); err != nil {
+			return nil, err
 		}
 		list := newListValue()
 		for i := 0; i < count; i++ {
 			item, err := r.string()
 			if err != nil {
-				return "", nil, err
+				return nil, err
 			}
 			list.pushBack(item)
 		}
-		return key, list, nil
+		return list, nil
 
 	case 2: // set
 		count, _, err := r.length()
 		if err != nil {
-			return "", nil, err
+			return nil, err
+		}
+		if err := r.checkCount(count); err != nil {
+			return nil, err
 		}
 		members := make(map[string]struct{}, count)
 		for i := 0; i < count; i++ {
 			member, err := r.string()
 			if err != nil {
-				return "", nil, err
+				return nil, err
 			}
 			members[string(member)] = struct{}{}
 		}
-		return key, &setValue{members: members}, nil
+		return &setValue{members: members}, nil
 
 	case 3, 5: // zset (string score / binary double)
 		count, _, err := r.length()
 		if err != nil {
-			return "", nil, err
+			return nil, err
+		}
+		if err := r.checkCount(count); err != nil {
+			return nil, err
 		}
 		zv := newZSetValue()
 		for i := 0; i < count; i++ {
 			member, err := r.string()
 			if err != nil {
-				return "", nil, err
+				return nil, err
 			}
 			var score float64
 			if kind == 3 {
@@ -479,54 +630,52 @@ func (r *rdbReader) object(kind byte) (string, value, error) {
 				score = math.Float64frombits(raw)
 			}
 			if err != nil {
-				return "", nil, err
+				return nil, err
 			}
 			zv.dict[string(member)] = score
 			zv.list.insert(string(member), score)
 		}
-		return key, zv, nil
+		return zv, nil
 
 	case 4: // hash
 		count, _, err := r.length()
 		if err != nil {
-			return "", nil, err
+			return nil, err
+		}
+		if err := r.checkCount(count); err != nil {
+			return nil, err
 		}
 		fields := make(map[string][]byte, count)
 		for i := 0; i < count; i++ {
 			field, err := r.string()
 			if err != nil {
-				return "", nil, err
+				return nil, err
 			}
 			value, err := r.string()
 			if err != nil {
-				return "", nil, err
+				return nil, err
 			}
 			fields[string(field)] = value
 		}
-		return key, &hashValue{fields: fields}, nil
+		return &hashValue{fields: fields}, nil
 
 	case 11: // intset
-		v, err := r.intset()
-		return key, v, err
+		return r.intset()
 
 	case 18: // quicklist v2 (listpack nodes)
-		v, err := r.quicklist()
-		return key, v, err
+		return r.quicklist()
 
 	case 16: // hash listpack
-		v, err := r.listpackHash()
-		return key, v, err
+		return r.listpackHash()
 
 	case 17: // zset listpack
-		v, err := r.listpackZSet()
-		return key, v, err
+		return r.listpackZSet()
 
 	case 20: // set listpack
-		v, err := r.listpackSet()
-		return key, v, err
+		return r.listpackSet()
 
 	default:
-		return "", nil, fmt.Errorf("%w: type %d", ErrRDBUnsupported, kind)
+		return nil, fmt.Errorf("%w: type %d", ErrRDBUnsupported, kind)
 	}
 }
 
@@ -569,6 +718,9 @@ func (r *rdbReader) intset() (value, error) {
 	}
 	encoding := binary.LittleEndian.Uint32(encodingRaw[:])
 	count := binary.LittleEndian.Uint32(countRaw[:])
+	if int64(count) > int64(len(blob)) {
+		return nil, ErrRDBFormat
+	}
 
 	members := make(map[string]struct{}, count)
 	for i := uint32(0); i < count; i++ {
@@ -603,6 +755,9 @@ func (r *rdbReader) intset() (value, error) {
 func (r *rdbReader) quicklist() (value, error) {
 	count, _, err := r.length()
 	if err != nil {
+		return nil, err
+	}
+	if err := r.checkCount(count); err != nil {
 		return nil, err
 	}
 	list := newListValue()

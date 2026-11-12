@@ -8,13 +8,18 @@
 package store
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
 	"math"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/zeebo/xxh3"
 )
 
 // defaultShardCount is a power of two and comfortably above the number of
@@ -24,9 +29,10 @@ const defaultShardCount = 16
 // Errors returned by value-changing operations. Command handlers turn these
 // into Redis error replies.
 var (
-	ErrNotInteger = errors.New("value is not an integer or out of range")
-	ErrOverflow   = errors.New("increment or decrement would overflow")
-	ErrWrongType  = errors.New("WRONGTYPE Operation against a key holding the wrong kind of value")
+	ErrNotInteger    = errors.New("value is not an integer or out of range")
+	ErrOverflow      = errors.New("increment or decrement would overflow")
+	ErrWrongType     = errors.New("WRONGTYPE Operation against a key holding the wrong kind of value")
+	ErrInvalidDigest = errors.New("ERR must be exactly 16 hexadecimal characters")
 )
 
 type entry struct {
@@ -63,9 +69,10 @@ type Store struct {
 	waiters *waiterSet
 	hook    atomic.Value // func(string)
 
-	now      func() int64
-	stop     chan struct{}
-	stopOnce sync.Once
+	now          func() int64
+	stop         chan struct{}
+	stopOnce     sync.Once
+	activeExpire atomic.Bool
 }
 
 // New returns an empty store using the wall clock.
@@ -94,12 +101,20 @@ func newStore(now func() int64, shardCount int) *Store {
 	for i := range shards {
 		shards[i] = &shard{data: make(map[string]*entry)}
 	}
-	return &Store{
+	s := &Store{
 		shards:  shards,
 		now:     now,
 		stop:    make(chan struct{}),
 		waiters: newWaiterSet(),
 	}
+	s.activeExpire.Store(true)
+	return s
+}
+
+// SetActiveExpire enables or disables the background expiration sampler,
+// matching DEBUG SET-ACTIVE-EXPIRE.
+func (s *Store) SetActiveExpire(enabled bool) {
+	s.activeExpire.Store(enabled)
 }
 
 // shardIndex hashes a key with FNV-1a.
@@ -218,6 +233,9 @@ func (s *Store) Close() {
 }
 
 func (s *Store) expireSample(limit int) {
+	if !s.activeExpire.Load() {
+		return
+	}
 	now := s.now()
 	remaining := limit
 	for _, sh := range s.shards {
@@ -342,6 +360,17 @@ func (s *Store) Get(key string) ([]byte, bool, error) {
 	return clone(sv.data), true, nil
 }
 
+// SetCondition is an optional value condition (IFEQ, IFNE, IFDEQ, IFDNE).
+type SetCondition uint8
+
+const (
+	CondNone SetCondition = iota
+	CondEq
+	CondNe
+	CondDigestEq
+	CondDigestNe
+)
+
 // SetOptions controls the behaviour of Set.
 type SetOptions struct {
 	NX        bool
@@ -352,6 +381,10 @@ type SetOptions struct {
 	// Get asks for the previous string value, and makes Set reject keys of
 	// another type the way SET ... GET does.
 	Get bool
+	// Cond compares the current value before writing. CondValue holds the
+	// expected value or its 16-character hexadecimal XXH3 digest.
+	Cond      SetCondition
+	CondValue []byte
 }
 
 // SetResult reports what Set did and what it replaced.
@@ -369,19 +402,36 @@ func (s *Store) Set(key string, value []byte, opts SetOptions) (SetResult, error
 
 	current, exists := s.lookupWrite(sh, key, now)
 
-	var res SetResult
+	var (
+		res          SetResult
+		currentValue []byte
+		isStr        bool
+	)
 	if exists {
 		sv, ok := current.value.(*stringValue)
+		isStr = ok
+		if ok {
+			currentValue = sv.data
+			res.Old = clone(sv.data)
+			res.HadOld = true
+		}
 		if opts.Get && !ok {
 			return SetResult{}, ErrWrongType
 		}
-		if ok {
-			res.Old = clone(sv.data)
-			res.HadOld = true
+		if opts.Cond != CondNone && !ok {
+			return SetResult{}, ErrWrongType
 		}
 	}
 	if (opts.NX && exists) || (opts.XX && !exists) {
 		return res, nil
+	}
+	if opts.Cond != CondNone {
+		if (opts.Cond == CondDigestEq || opts.Cond == CondDigestNe) && isStr && len(opts.CondValue) != 16 {
+			return SetResult{}, ErrInvalidDigest
+		}
+		if !setConditionMet(opts.Cond, opts.CondValue, currentValue, isStr) {
+			return res, nil
+		}
 	}
 
 	expireAt := int64(0)
@@ -402,6 +452,31 @@ func (s *Store) Set(key string, value []byte, opts SetOptions) (SetResult, error
 	sh.data[key] = s.newEntry(&stringValue{data: clone(value)}, expireAt)
 	return res, nil
 }
+
+// setConditionMet evaluates a SET value condition. current is only meaningful
+// when isStr is true.
+func setConditionMet(cond SetCondition, expected, current []byte, isStr bool) bool {
+	switch cond {
+	case CondEq:
+		return isStr && bytes.Equal(current, expected)
+	case CondNe:
+		return !isStr || !bytes.Equal(current, expected)
+	case CondDigestEq:
+		return isStr && strings.EqualFold(digestHex(current), string(expected))
+	case CondDigestNe:
+		return !isStr || !strings.EqualFold(digestHex(current), string(expected))
+	default:
+		return true
+	}
+}
+
+// digestHex returns the 64-bit XXH3 digest Redis uses for SET IFDEQ/IFDNE.
+func digestHex(value []byte) string {
+	return fmt.Sprintf("%016x", xxh3.Hash(value))
+}
+
+// DigestHex exposes the SET digest format for tests.
+func DigestHex(value []byte) string { return digestHex(value) }
 
 // KeyValue is a key/value pair used by MSET-style and HSET-style operations.
 type KeyValue struct {

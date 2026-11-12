@@ -343,7 +343,10 @@ func (s *Store) ZRangeByScore(key string, r ScoreRange, offset, count int, rever
 	if !ok {
 		return nil, ErrWrongType
 	}
+	return zrangeByScoreLocked(zv, r, offset, count, reverse), nil
+}
 
+func zrangeByScoreLocked(zv *zsetValue, r ScoreRange, offset, count int, reverse bool) []ScoreMember {
 	var out []ScoreMember
 	appendNode := func(node *skipNode) bool {
 		if !scoreAtLeast(node.score, r.Min, r.MinExclusive) || !inUpperBound(node.score, r) {
@@ -383,7 +386,7 @@ func (s *Store) ZRangeByScore(key string, r ScoreRange, offset, count int, rever
 			node = node.levels[0].forward
 		}
 	}
-	return out, nil
+	return out
 }
 
 // ZRemRangeByRank removes an inclusive rank range.

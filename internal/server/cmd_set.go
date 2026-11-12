@@ -20,6 +20,76 @@ func init() {
 	registerCommand("SPOP", -2, flagWrite|flagFast, cmdSPop)
 	registerCommand("SRANDMEMBER", -2, flagReadOnly, cmdSRandMember)
 	registerCommand("SSCAN", -3, flagReadOnly, cmdSScan)
+	registerCommand("SMOVE", 4, flagWrite|flagFast, cmdSMove)
+	registerCommand("SINTERSTORE", -3, flagWrite, setStoreHandler("INTER"))
+	registerCommand("SUNIONSTORE", -3, flagWrite, setStoreHandler("UNION"))
+	registerCommand("SDIFFSTORE", -3, flagWrite, setStoreHandler("DIFF"))
+	registerCommand("SINTERCARD", -3, flagReadOnly, cmdSInterCard)
+}
+
+func cmdSMove(c *client, args [][]byte) (result, error) {
+	moved, err := c.srv.data.SMove(string(args[1]), string(args[2]), args[3])
+	if err != nil {
+		return result{}, err
+	}
+	if moved {
+		return result{reply: intReply(1), mutated: true}, nil
+	}
+	return result{reply: intReply(0)}, nil
+}
+
+func setStoreHandler(op string) handlerFunc {
+	return func(c *client, args [][]byte) (result, error) {
+		keys := make([]string, 0, len(args)-2)
+		for _, key := range args[2:] {
+			keys = append(keys, string(key))
+		}
+		n, err := c.srv.data.SStore(op, string(args[1]), keys)
+		if err != nil {
+			return result{}, err
+		}
+		return result{reply: intReply(n), mutated: true}, nil
+	}
+}
+
+func cmdSInterCard(c *client, args [][]byte) (result, error) {
+	numKeys, err := parseInt(args[1])
+	if err != nil || numKeys <= 0 {
+		return result{}, fmt.Errorf("ERR numkeys should be greater than 0")
+	}
+	if int(numKeys) > len(args)-2 {
+		return result{}, fmt.Errorf("ERR Number of keys can't be greater than number of args")
+	}
+	keys := make([]string, 0, numKeys)
+	for _, key := range args[2 : 2+numKeys] {
+		keys = append(keys, string(key))
+	}
+
+	limit := int64(0)
+	rest := args[2+numKeys:]
+	for i := 0; i < len(rest); i++ {
+		if !strings.EqualFold(string(rest[i]), "LIMIT") || i+1 >= len(rest) {
+			return result{}, errSyntax
+		}
+		i++
+		value, err := parseInt(rest[i])
+		if err != nil {
+			return result{}, errSyntax
+		}
+		if value < 0 {
+			return result{}, fmt.Errorf("ERR LIMIT can't be negative")
+		}
+		limit = value
+	}
+	if len(rest) > 2 {
+		return result{}, errSyntax
+	}
+
+	n, err := c.srv.data.SInterCard(keys, limit)
+	if err != nil {
+		return result{}, err
+	}
+	return result{reply: intReply(n)}, nil
 }
 
 func memberArgs(args [][]byte) [][]byte {
@@ -82,7 +152,7 @@ func cmdSMembers(c *client, args [][]byte) (result, error) {
 	if err != nil {
 		return result{}, err
 	}
-	return result{reply: bulkArray(members)}, nil
+	return result{reply: bulkSet(members)}, nil
 }
 
 func cmdSInter(c *client, args [][]byte) (result, error) {
@@ -106,7 +176,7 @@ func setAlgebraReply(c *client, args [][]byte, op func([]string) ([][]byte, erro
 	if err != nil {
 		return result{}, err
 	}
-	return result{reply: bulkArray(members)}, nil
+	return result{reply: bulkSet(members)}, nil
 }
 
 func cmdSPop(c *client, args [][]byte) (result, error) {
@@ -120,6 +190,14 @@ func cmdSPop(c *client, args [][]byte) (result, error) {
 	}
 
 	out := result{mutated: len(members) > 0}
+	if len(members) > 0 {
+		rewrite := make([][]byte, 0, len(members)+2)
+		rewrite = append(rewrite, []byte("SREM"), args[1])
+		for _, member := range members {
+			rewrite = append(rewrite, member)
+		}
+		out.rewrite = rewrite
+	}
 	if !withCount {
 		if len(members) == 0 {
 			out.reply = null
@@ -128,7 +206,7 @@ func cmdSPop(c *client, args [][]byte) (result, error) {
 		out.reply = bulkReply(members[0])
 		return out, nil
 	}
-	out.reply = bulkArray(members)
+	out.reply = bulkSet(members)
 	return out, nil
 }
 
@@ -214,6 +292,14 @@ func cmdSScan(c *client, args [][]byte) (result, error) {
 
 func bulkArray(values [][]byte) arrayReply {
 	out := make(arrayReply, 0, len(values))
+	for _, value := range values {
+		out = append(out, bulkReply(value))
+	}
+	return out
+}
+
+func bulkSet(values [][]byte) setReply {
+	out := make(setReply, 0, len(values))
 	for _, value := range values {
 		out = append(out, bulkReply(value))
 	}

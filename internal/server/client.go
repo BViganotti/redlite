@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -39,10 +40,14 @@ type client struct {
 	watched    map[string]store.WatchState
 	executing  bool
 	fromMaster bool
+	replyMode  replyMode
+	monitor    bool
+	blocked    atomic.Bool
 
 	writeMu sync.Mutex
 	subs    map[string]struct{}
 	psubs   map[string]struct{}
+	ssubs   map[string]struct{}
 }
 
 func newClient(srv *Server, conn net.Conn, id int64) *client {
@@ -94,6 +99,18 @@ func (c *client) setName(name string) error {
 	return nil
 }
 
+func (c *client) setUser(name string) {
+	c.mu.Lock()
+	c.userName = name
+	c.mu.Unlock()
+}
+
+func (c *client) user() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.userName
+}
+
 func (c *client) name() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -113,6 +130,20 @@ func (c *client) lastCommand() string {
 		return "NULL"
 	}
 	return c.lastCmd
+}
+
+// flags renders the CLIENT LIST flags field.
+func (c *client) flags() string {
+	switch {
+	case c.blocked.Load():
+		return "b"
+	case c.subscribed():
+		return "P"
+	case c.srv.isReplicaClient(c):
+		return "S"
+	default:
+		return "N"
+	}
 }
 
 func (c *client) localAddr() string {
@@ -163,13 +194,41 @@ func (c *client) push(value any) error {
 func (c *client) subscribed() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return len(c.subs)+len(c.psubs) > 0
+	return len(c.subs)+len(c.psubs)+len(c.ssubs) > 0
 }
 
-func (c *client) subCounts() (channels, patterns int) {
+func (c *client) subCounts() (channels, patterns, shards int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return len(c.subs), len(c.psubs)
+	return len(c.subs), len(c.psubs), len(c.ssubs)
+}
+
+func (c *client) addShardSubscription(name string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.ssubs == nil {
+		c.ssubs = make(map[string]struct{})
+	}
+	c.ssubs[name] = struct{}{}
+	return len(c.subs) + len(c.psubs) + len(c.ssubs)
+}
+
+func (c *client) removeShardSubscription(name string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.ssubs, name)
+	return len(c.subs) + len(c.psubs) + len(c.ssubs)
+}
+
+func (c *client) shardSubscriptionNames() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]string, 0, len(c.ssubs))
+	for name := range c.ssubs {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (c *client) addSubscription(pattern bool, name string) int {
@@ -186,7 +245,7 @@ func (c *client) addSubscription(pattern bool, name string) int {
 		}
 		c.subs[name] = struct{}{}
 	}
-	return len(c.subs) + len(c.psubs)
+	return len(c.subs) + len(c.psubs) + len(c.ssubs)
 }
 
 func (c *client) removeSubscription(pattern bool, name string) int {
@@ -197,7 +256,7 @@ func (c *client) removeSubscription(pattern bool, name string) int {
 	} else {
 		delete(c.subs, name)
 	}
-	return len(c.subs) + len(c.psubs)
+	return len(c.subs) + len(c.psubs) + len(c.ssubs)
 }
 
 func (c *client) subscriptionNames(pattern bool) []string {
@@ -228,6 +287,33 @@ func (c *client) protoNum() int {
 		return int(v)
 	}
 	return 2
+}
+
+// replyMode implements CLIENT REPLY.
+type replyMode uint8
+
+const (
+	replyOn replyMode = iota
+	replyOff
+	replySkip
+)
+
+// beginCommandReply consumes the CLIENT REPLY state for one command and
+// reports whether its reply (including an error) must be discarded.
+func (c *client) beginCommandReply(args [][]byte) bool {
+	if len(args) > 1 && strings.EqualFold(string(args[0]), "CLIENT") &&
+		strings.EqualFold(string(args[1]), "REPLY") {
+		return false
+	}
+	switch c.replyMode {
+	case replyOff:
+		return true
+	case replySkip:
+		c.replyMode = replyOn
+		return true
+	default:
+		return false
+	}
 }
 
 type discardWriter struct{}

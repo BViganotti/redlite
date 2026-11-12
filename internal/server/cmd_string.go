@@ -62,6 +62,8 @@ type setSpec struct {
 	nx, xx, get, keepTTL bool
 	hasExpire            bool
 	expireAt             int64
+	cond                 store.SetCondition
+	condValue            []byte
 }
 
 func parseSetSpec(args [][]byte, now int64) (setSpec, error) {
@@ -70,15 +72,35 @@ func parseSetSpec(args [][]byte, now int64) (setSpec, error) {
 		opt := strings.ToUpper(string(args[i]))
 		switch opt {
 		case "NX":
-			if spec.nx || spec.xx {
+			if spec.nx || spec.xx || spec.cond != store.CondNone {
 				return setSpec{}, errSyntax
 			}
 			spec.nx = true
 		case "XX":
-			if spec.nx || spec.xx {
+			if spec.nx || spec.xx || spec.cond != store.CondNone {
 				return setSpec{}, errSyntax
 			}
 			spec.xx = true
+		case "IFEQ", "IFNE", "IFDEQ", "IFDNE":
+			if spec.nx || spec.xx || spec.cond != store.CondNone {
+				return setSpec{}, errSyntax
+			}
+			if i+1 >= len(args) {
+				return setSpec{}, errSyntax
+			}
+			i++
+			value := args[i]
+			switch opt {
+			case "IFEQ":
+				spec.cond = store.CondEq
+			case "IFNE":
+				spec.cond = store.CondNe
+			case "IFDEQ":
+				spec.cond = store.CondDigestEq
+			case "IFDNE":
+				spec.cond = store.CondDigestNe
+			}
+			spec.condValue = value
 		case "GET":
 			if spec.get {
 				return setSpec{}, errSyntax
@@ -129,6 +151,8 @@ func cmdSet(c *client, args [][]byte) (result, error) {
 		HasExpire: spec.hasExpire,
 		ExpireAt:  spec.expireAt,
 		Get:       spec.get,
+		Cond:      spec.cond,
+		CondValue: spec.condValue,
 	})
 	if err != nil {
 		return result{}, err

@@ -100,3 +100,35 @@ These are intentionally small and self-contained:
 - Add `HSTRLEN` and `LPOS`
 - Add `SINTERCARD`
 - Report command statistics in `INFO`
+
+## v0.12 — parity phase 1 (done)
+
+- [x] Set stores (`SINTERSTORE`, `SUNIONSTORE`, `SDIFFSTORE`), `SMOVE`,
+      `SINTERCARD`
+- [x] `LMPOP` / `BLMPOP`, `ZMPOP` / `BZMPOP`
+- [x] Lexicographic sorted-set ranges and `ZRANGESTORE`, `ZINTERCARD`
+- [x] Unified `ZRANGE ... BYSCORE|BYLEX REV LIMIT`
+- [x] `BITFIELD` / `BITFIELD_RO` with WRAP/SAT/FAIL overflow modes
+- [x] `LCS`, `SUBSTR`, and `SET` `IFEQ`/`IFNE`/`IFDEQ`/`IFDNE`
+- [x] `SORT` / `SORT_RO` with `BY`, `GET`, `LIMIT`, `ALPHA`, `DESC`, `STORE`
+- [x] `DUMP` / `RESTORE` in Redis payload format, interoperable with Redis
+- [x] Sharded pub/sub (`SSUBSCRIBE`, `SUNSUBSCRIBE`, `SPUBLISH`)
+- [x] `SLOWLOG`, `LATENCY`, `DEBUG`, `MODULE LIST`, `MONITOR`,
+      `CLIENT KILL`, `CLIENT REPLY`, `WAITAOF`
+- [x] RESP3 sets and doubles; `COMMAND DOCS` and `COMMAND LIST FILTERBY`
+- [x] Differential and randomized cross-checks against Redis 8.8
+
+## v0.13 — interop and access control (done)
+
+- [x] Redis `HYLL` HyperLogLog format and estimator, both directions with Redis
+- [x] Geo command family on geohash-encoded sorted sets
+- [x] `MIGRATE` with COPY/REPLACE/AUTH/AUTH2/KEYS and TTL preservation
+- [x] ACL selectors, `ACL DRYRUN`, `ACL LOG`, `ACL CAT <category>`, `ACL GENPASS`
+
+## Next
+
+- [ ] Streams and consumer groups
+- [ ] Lua scripting and functions
+- [ ] Multiple databases and cluster mode
+- [ ] Hash field expiration
+- [ ] Replication and AOF parity with a real Redis peer

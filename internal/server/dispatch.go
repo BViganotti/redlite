@@ -26,6 +26,15 @@ type (
 	errorReply     string
 	nullReply      struct{}
 	nullArrayReply struct{}
+	doubleReply    float64
+	bigNumberReply string
+	verbatimReply  struct {
+		format string
+		text   string
+	}
+	setReply       []any
+	boolReply      bool
+	attributeReply []any
 )
 
 var null = nullReply{}
@@ -44,6 +53,40 @@ func writeReply(w *resp.Writer, v any) error {
 		return w.WriteError(string(reply))
 	case intReply:
 		return w.WriteInt(int64(reply))
+	case doubleReply:
+		return w.WriteDouble(float64(reply))
+	case bigNumberReply:
+		return w.WriteBigNumber(string(reply))
+	case verbatimReply:
+		return w.WriteVerbatim(reply.format, reply.text)
+	case boolReply:
+		return w.WriteBool(bool(reply))
+	case setReply:
+		if err := w.WriteSetHeader(len(reply)); err != nil {
+			return err
+		}
+		for _, item := range reply {
+			if err := writeReply(w, item); err != nil {
+				return err
+			}
+		}
+		return nil
+	case attributeReply:
+		if w.Proto() < 3 {
+			return nil
+		}
+		if len(reply)%2 != 0 {
+			return errors.New("resp: attribute reply has an odd number of elements")
+		}
+		if err := w.WriteAttributeHeader(len(reply) / 2); err != nil {
+			return err
+		}
+		for _, item := range reply {
+			if err := writeReply(w, item); err != nil {
+				return err
+			}
+		}
+		return nil
 	case arrayReply:
 		if err := w.WriteArrayHeader(len(reply)); err != nil {
 			return err
@@ -319,7 +362,8 @@ var (
 
 func allowedWhileSubscribed(name string) bool {
 	switch name {
-	case "SUBSCRIBE", "UNSUBSCRIBE", "PSUBSCRIBE", "PUNSUBSCRIBE", "PING", "QUIT", "RESET":
+	case "SUBSCRIBE", "UNSUBSCRIBE", "PSUBSCRIBE", "PUNSUBSCRIBE",
+		"SSUBSCRIBE", "SUNSUBSCRIBE", "SPUBLISH", "PING", "QUIT", "RESET":
 		return true
 	}
 	return false

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 )
 
@@ -346,6 +347,79 @@ func (w *Writer) WriteBool(v bool) error {
 // WriteArrayHeader writes the length prefix of an array.
 func (w *Writer) WriteArrayHeader(n int) error {
 	return w.writeString("*" + strconv.Itoa(n) + "\r\n")
+}
+
+// WriteSetHeader writes a RESP3 set header, or an array header in RESP2.
+func (w *Writer) WriteSetHeader(n int) error {
+	if w.proto >= 3 {
+		return w.writeString("~" + strconv.Itoa(n) + "\r\n")
+	}
+	return w.WriteArrayHeader(n)
+}
+
+// WriteDouble writes a RESP3 double, or a bulk string in RESP2. Redis uses the
+// same textual form for both protocols.
+func (w *Writer) WriteDouble(v float64) error {
+	text := FormatDouble(v)
+	if w.proto >= 3 {
+		return w.writeString("," + text + "\r\n")
+	}
+	return w.WriteBulkString(text)
+}
+
+// WriteBigNumber writes a RESP3 big number, or a bulk string in RESP2.
+func (w *Writer) WriteBigNumber(digits string) error {
+	if w.proto >= 3 {
+		return w.writeString("(" + digits + "\r\n")
+	}
+	return w.WriteBulkString(digits)
+}
+
+// WriteVerbatim writes a RESP3 verbatim string, or a plain bulk string in
+// RESP2. The format is a three-character type such as "txt" or "mkd".
+func (w *Writer) WriteVerbatim(format, text string) error {
+	if w.proto >= 3 {
+		if len(format) != 3 {
+			return errors.New("resp: verbatim format must be three characters")
+		}
+		if err := w.writeString("=" + strconv.Itoa(len(text)+4) + "\r\n" + format + ":"); err != nil {
+			return err
+		}
+		if _, err := w.bw.WriteString(text); err != nil {
+			return err
+		}
+		return w.writeString("\r\n")
+	}
+	return w.WriteBulkString(text)
+}
+
+// WriteAttributeHeader writes a RESP3 attribute header. RESP2 has no
+// attributes, so the header and the values that follow are dropped by the
+// caller when Proto reports 2.
+func (w *Writer) WriteAttributeHeader(n int) error {
+	if w.proto < 3 {
+		return nil
+	}
+	return w.writeString("|" + strconv.Itoa(n) + "\r\n")
+}
+
+// FormatDouble renders a float the way Redis does: no trailing ".0" for
+// integral values, "inf"/"-inf" for infinities and lowercase exponent form.
+func FormatDouble(v float64) string {
+	switch {
+	case math.IsInf(v, 1):
+		return "inf"
+	case math.IsInf(v, -1):
+		return "-inf"
+	case math.IsNaN(v):
+		return "nan"
+	case v == 0:
+		return "0"
+	case v == math.Trunc(v) && math.Abs(v) < 1e17:
+		return strconv.FormatInt(int64(v), 10)
+	default:
+		return strconv.FormatFloat(v, 'g', -1, 64)
+	}
 }
 
 // WritePushHeader writes a RESP3 push header, or an array header in RESP2.

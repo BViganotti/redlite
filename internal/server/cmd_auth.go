@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/rand"
 	"fmt"
 	"sort"
 	"strings"
@@ -27,9 +28,10 @@ func cmdAuth(c *client, args [][]byte) (result, error) {
 
 	name, err := c.srv.authenticate(user, password)
 	if err != nil {
+		c.srv.recordACLLog(c, user, "auth", "AUTH", "toplevel")
 		return result{}, err
 	}
-	c.userName = name
+	c.setUser(name)
 	c.authed = true
 	return result{reply: simpleReply("OK")}, nil
 }
@@ -37,7 +39,7 @@ func cmdAuth(c *client, args [][]byte) (result, error) {
 func cmdAcl(c *client, args [][]byte) (result, error) {
 	switch strings.ToUpper(string(args[1])) {
 	case "WHOAMI":
-		return result{reply: bulkReply(c.userName)}, nil
+		return result{reply: bulkReply(c.user())}, nil
 
 	case "USERS":
 		names := c.srv.acl.names()
@@ -64,7 +66,31 @@ func cmdAcl(c *client, args [][]byte) (result, error) {
 	case "GETUSER":
 		return cmdAclGetUser(c, args)
 
+	case "DRYRUN":
+		return c.aclDryRun(args)
+
+	case "LOG":
+		return c.aclLog(args)
+
+	case "GENPASS":
+		return cmdAclGenPass(args)
+
 	case "CAT":
+		return cmdAclCat(args)
+
+	case "HELP":
+		return result{reply: arrayReply{
+			bulkReply("ACL <subcommand>"),
+			bulkReply("WHOAMI, USERS, LIST, GETUSER, SETUSER, DELUSER, DRYRUN, LOG, CAT, GENPASS"),
+		}}, nil
+
+	default:
+		return result{}, fmt.Errorf("ERR unknown subcommand '%s' for ACL", printable(args[1]))
+	}
+}
+
+func cmdAclCat(args [][]byte) (result, error) {
+	if len(args) == 2 {
 		return result{reply: arrayReply{
 			bulkReply("keyspace"),
 			bulkReply("read"),
@@ -73,48 +99,71 @@ func cmdAcl(c *client, args [][]byte) (result, error) {
 			bulkReply("pubsub"),
 			bulkReply("transaction"),
 			bulkReply("connection"),
+			bulkReply("string"),
+			bulkReply("list"),
+			bulkReply("set"),
+			bulkReply("sortedset"),
+			bulkReply("hash"),
+			bulkReply("bitmap"),
+			bulkReply("hyperloglog"),
+			bulkReply("geo"),
+			bulkReply("stream"),
+			bulkReply("scripting"),
+			bulkReply("fast"),
+			bulkReply("slow"),
+			bulkReply("blocking"),
 		}}, nil
-
-	case "HELP":
-		return result{reply: arrayReply{
-			bulkReply("ACL <subcommand>"),
-			bulkReply("WHOAMI, USERS, LIST, GETUSER, SETUSER, DELUSER, CAT"),
-		}}, nil
-
-	default:
-		return result{}, fmt.Errorf("ERR unknown subcommand '%s' for ACL", printable(args[1]))
 	}
+	if len(args) != 3 {
+		return result{}, fmt.Errorf("ERR wrong number of arguments for 'acl|cat' command")
+	}
+	category := strings.ToLower(string(args[2]))
+	known := map[string]bool{
+		"keyspace": true, "read": true, "write": true, "admin": true, "pubsub": true,
+		"transaction": true, "connection": true, "string": true, "list": true,
+		"set": true, "sortedset": true, "hash": true, "bitmap": true,
+		"hyperloglog": true, "geo": true, "stream": true, "scripting": true,
+		"fast": true, "slow": true, "blocking": true,
+	}
+	if !known[category] {
+		return result{}, fmt.Errorf("ERR Unknown category '%s'", category)
+	}
+	names := commandNames()
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		if commandACLCategories(name)[category] {
+			out = append(out, strings.ToLower(name))
+		}
+	}
+	sort.Strings(out)
+	return result{reply: bulkArrayString(out)}, nil
 }
 
+func cmdAclGenPass(args [][]byte) (result, error) {
+	bits := 256
+	if len(args) == 3 {
+		n, err := parseInt(args[2])
+		if err != nil || n < 1 || n > 4096 {
+			return result{}, fmt.Errorf("ERR ACL GENPASS argument must be the number of bits for the output password, a positive number up to 4096")
+		}
+		bits = int(n)
+	} else if len(args) > 3 {
+		return result{}, fmt.Errorf("ERR wrong number of arguments for 'acl|genpass' command")
+	}
+	chars := (bits + 3) / 4
+	raw := make([]byte, chars)
+	if _, err := rand.Read(raw); err != nil {
+		return result{}, fmt.Errorf("ERR failed to generate password: %v", err)
+	}
+	password := make([]byte, chars)
+	const hexDigits = "0123456789abcdef"
+	for i, b := range raw {
+		password[i] = hexDigits[b&0x0f]
+	}
+	return result{reply: bulkReply(password)}, nil
+}
+
+// aclCommandsDescription is kept for callers that describe the root selector.
 func aclCommandsDescription(user *aclUser) string {
-	if user.allCommands {
-		return "+@all"
-	}
-	parts := make([]string, 0, len(user.allowed)+len(user.denied)+2)
-	if user.allowRead {
-		parts = append(parts, "+@read")
-	}
-	if user.allowWrite {
-		parts = append(parts, "+@write")
-	}
-	allowed := make([]string, 0, len(user.allowed))
-	for name := range user.allowed {
-		allowed = append(allowed, name)
-	}
-	sort.Strings(allowed)
-	for _, name := range allowed {
-		parts = append(parts, "+"+strings.ToLower(name))
-	}
-	denied := make([]string, 0, len(user.denied))
-	for name := range user.denied {
-		denied = append(denied, name)
-	}
-	sort.Strings(denied)
-	for _, name := range denied {
-		parts = append(parts, "-"+strings.ToLower(name))
-	}
-	if len(parts) == 0 {
-		return "-@all"
-	}
-	return strings.Join(parts, " ")
+	return user.root.commandsDescription()
 }

@@ -371,6 +371,62 @@ func (s *Store) Move(source, destination string, fromLeft, toLeft bool) ([]byte,
 	return value, true, nil
 }
 
+// LMPop pops up to count elements from the first non-empty list among keys.
+// It returns the key that supplied the elements and the popped values. The
+// operation holds every involved shard so it is atomic.
+func (s *Store) LMPop(keys []string, left bool, count int) (string, [][]byte, error) {
+	if count <= 0 {
+		return "", nil, nil
+	}
+	locked := s.lockKeys(keys)
+	defer s.unlockKeys(locked)
+
+	now := s.now()
+	for _, key := range keys {
+		sh := s.shardFor(key)
+		e, ok := s.lookupWrite(sh, key, now)
+		if !ok {
+			continue
+		}
+		lv, ok := e.value.(*listValue)
+		if !ok {
+			return "", nil, ErrWrongType
+		}
+		if lv.len() == 0 {
+			delete(sh.data, key)
+			continue
+		}
+
+		limit := count
+		if limit > lv.len() {
+			limit = lv.len()
+		}
+		out := make([][]byte, 0, limit)
+		for i := 0; i < limit; i++ {
+			var (
+				value []byte
+				ok    bool
+			)
+			if left {
+				value, ok = lv.popFront()
+			} else {
+				value, ok = lv.popBack()
+			}
+			if !ok {
+				break
+			}
+			out = append(out, value)
+		}
+		if lv.len() == 0 {
+			delete(sh.data, key)
+		} else {
+			s.touch(sh.data[key])
+		}
+		return key, out, nil
+	}
+	return "", nil, nil
+}
+
 func normalizeIndex(index int64, length int) (int, bool) {
 	if index < 0 {
 		index += int64(length)

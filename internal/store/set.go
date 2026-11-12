@@ -334,6 +334,158 @@ func (s *Store) SScan(key string, cursor uint64, pattern string, count int) (uin
 	return cursor, out, nil
 }
 
+// SMove atomically moves member from source to destination. It reports
+// whether the member was moved. The destination is type-checked before the
+// source is modified, matching Redis.
+func (s *Store) SMove(source, destination string, member []byte) (bool, error) {
+	locked := s.lockKeys([]string{source, destination})
+	defer s.unlockKeys(locked)
+
+	now := s.now()
+	srcShard := s.shardFor(source)
+	srcEntry, ok := s.lookupWrite(srcShard, source, now)
+	if !ok {
+		return false, nil
+	}
+	src, ok := srcEntry.value.(*setValue)
+	if !ok {
+		return false, ErrWrongType
+	}
+
+	target := string(member)
+	if _, exists := src.members[target]; !exists {
+		return false, nil
+	}
+
+	dstShard := s.shardFor(destination)
+	dst, err := s.setLocked(dstShard, destination, now, false)
+	if err != nil {
+		return false, err
+	}
+	if dst == nil {
+		dst = &setValue{members: make(map[string]struct{})}
+		dstShard.data[destination] = s.newEntry(dst, 0)
+		s.sets.Add(1)
+	}
+
+	delete(src.members, target)
+	dst.members[target] = struct{}{}
+	s.touch(dstShard.data[destination])
+	if len(src.members) == 0 {
+		delete(srcShard.data, source)
+	} else {
+		s.touch(srcShard.data[source])
+	}
+	return true, nil
+}
+
+// SStore computes an intersection, union or difference and stores the result
+// at destination, returning its cardinality. An empty result deletes the
+// destination, as Redis does.
+func (s *Store) SStore(op string, destination string, keys []string) (int64, error) {
+	locked := s.lockAllShards()
+	defer s.unlockAllShards(locked)
+
+	now := s.now()
+	sets := make([]map[string]struct{}, 0, len(keys))
+	for _, key := range keys {
+		e, ok := s.lookupRead(s.shardFor(key), key, now)
+		if !ok {
+			sets = append(sets, nil)
+			continue
+		}
+		sv, ok := e.value.(*setValue)
+		if !ok {
+			return 0, ErrWrongType
+		}
+		sets = append(sets, sv.members)
+	}
+
+	var result map[string]struct{}
+	switch op {
+	case "INTER":
+		result = intersect(sets)
+	case "UNION":
+		result = union(sets)
+	case "DIFF":
+		result = difference(sets)
+	default:
+		return 0, ErrWrongType
+	}
+
+	destShard := s.shardFor(destination)
+	if len(result) == 0 {
+		delete(destShard.data, destination)
+		return 0, nil
+	}
+	members := make(map[string]struct{}, len(result))
+	for member := range result {
+		members[member] = struct{}{}
+	}
+	destShard.data[destination] = s.newEntry(&setValue{members: members}, 0)
+	s.sets.Add(1)
+	return int64(len(members)), nil
+}
+
+// SInterCard counts the intersection of the sets at keys, stopping once limit
+// is reached. A limit of zero means no limit.
+func (s *Store) SInterCard(keys []string, limit int64) (int64, error) {
+	locked := s.lockKeys(keys)
+	defer s.unlockKeys(locked)
+
+	now := s.now()
+	sets := make([]map[string]struct{}, 0, len(keys))
+	for _, key := range keys {
+		e, ok := s.lookupRead(s.shardFor(key), key, now)
+		if !ok {
+			// Still type-check the remaining keys before reporting an empty
+			// intersection, so a later WRONGTYPE is not hidden by a miss.
+			sets = append(sets, nil)
+			continue
+		}
+		sv, ok := e.value.(*setValue)
+		if !ok {
+			return 0, ErrWrongType
+		}
+		sets = append(sets, sv.members)
+	}
+	if len(sets) == 0 {
+		return 0, nil
+	}
+	for _, set := range sets {
+		if set == nil {
+			return 0, nil
+		}
+	}
+	// Walk the smallest set so a limit short-circuits early.
+	smallest := 0
+	for i := 1; i < len(sets); i++ {
+		if len(sets[i]) < len(sets[smallest]) {
+			smallest = i
+		}
+	}
+	var count int64
+	for member := range sets[smallest] {
+		present := true
+		for i, set := range sets {
+			if i == smallest {
+				continue
+			}
+			if _, ok := set[member]; !ok {
+				present = false
+				break
+			}
+		}
+		if present {
+			count++
+			if limit > 0 && count >= limit {
+				return count, nil
+			}
+		}
+	}
+	return count, nil
+}
+
 func setMembers(m map[string]struct{}) [][]byte {
 	members := make([]string, 0, len(m))
 	for member := range m {

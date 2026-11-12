@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -21,8 +22,8 @@ func init() {
 	registerCommand("ZREVRANGE", -4, flagReadOnly, cmdZRange)
 	registerCommand("ZRANGEBYSCORE", -4, flagReadOnly, cmdZRangeByScore)
 	registerCommand("ZREVRANGEBYSCORE", -4, flagReadOnly, cmdZRangeByScore)
-	registerCommand("ZRANK", 3, flagReadOnly|flagFast, cmdZRank)
-	registerCommand("ZREVRANK", 3, flagReadOnly|flagFast, cmdZRank)
+	registerCommand("ZRANK", -3, flagReadOnly|flagFast, cmdZRank)
+	registerCommand("ZREVRANK", -3, flagReadOnly|flagFast, cmdZRank)
 	registerCommand("ZREMRANGEBYRANK", 4, flagWrite, cmdZRemRangeByRank)
 	registerCommand("ZREMRANGEBYSCORE", 4, flagWrite, cmdZRemRangeByScore)
 	registerCommand("ZSCAN", -3, flagReadOnly, cmdZScan)
@@ -93,7 +94,7 @@ parseOptions:
 		if !res.HasScore {
 			return result{reply: null}, nil
 		}
-		return result{reply: bulkReply(store.FormatScore(res.Score)), mutated: true}, nil
+		return result{reply: doubleReply(res.Score), mutated: true}, nil
 	}
 
 	count := res.Added
@@ -123,7 +124,7 @@ func cmdZScore(c *client, args [][]byte) (result, error) {
 	if !ok {
 		return result{reply: null}, nil
 	}
-	return result{reply: bulkReply(store.FormatScore(score))}, nil
+	return result{reply: doubleReply(score)}, nil
 }
 
 func cmdZMScore(c *client, args [][]byte) (result, error) {
@@ -137,7 +138,7 @@ func cmdZMScore(c *client, args [][]byte) (result, error) {
 			out = append(out, null)
 			continue
 		}
-		out = append(out, bulkReply(store.FormatScore(score)))
+		out = append(out, doubleReply(score))
 	}
 	return result{reply: out}, nil
 }
@@ -151,7 +152,7 @@ func cmdZIncrBy(c *client, args [][]byte) (result, error) {
 	if err != nil {
 		return result{}, err
 	}
-	return result{reply: bulkReply(store.FormatScore(score)), mutated: true}, nil
+	return result{reply: doubleReply(score), mutated: true}, nil
 }
 
 func cmdZCard(c *client, args [][]byte) (result, error) {
@@ -175,30 +176,126 @@ func cmdZCount(c *client, args [][]byte) (result, error) {
 }
 
 func cmdZRange(c *client, args [][]byte) (result, error) {
-	reverse := strings.EqualFold(string(args[0]), "ZREVRANGE")
-	start, err := parseInt(args[2])
-	if err != nil {
-		return result{}, err
-	}
-	stop, err := parseInt(args[3])
-	if err != nil {
-		return result{}, err
-	}
-	withScores := false
-	for _, option := range args[4:] {
-		switch strings.ToUpper(string(option)) {
-		case "WITHSCORES":
-			withScores = true
-		default:
-			return result{}, errSyntax
+	legacyReverse := strings.EqualFold(string(args[0]), "ZREVRANGE")
+	if legacyReverse && len(args) > 4 {
+		for _, option := range args[4:] {
+			if !strings.EqualFold(string(option), "WITHSCORES") {
+				return result{}, errSyntax
+			}
 		}
 	}
-
-	entries, err := c.srv.data.ZRange(string(args[1]), start, stop, reverse)
+	spec, withScores, err := parseZRangeSpec(args, 2, 4, legacyReverse, true)
+	if err != nil {
+		return result{}, err
+	}
+	entries, err := c.srv.data.ZRangeGeneric(string(args[1]), spec)
 	if err != nil {
 		return result{}, err
 	}
 	return result{reply: scoreEntriesReply(entries, withScores)}, nil
+}
+
+// parseZRangeSpec parses the bounds and options shared by ZRANGE, ZRANGESTORE
+// and ZREVRANGE. boundStart is the index of the first bound and optStart the
+// index of the first option.
+func parseZRangeSpec(args [][]byte, boundStart, optStart int, reverse bool, allowScores bool) (store.ZRangeSpec, bool, error) {
+	spec := store.ZRangeSpec{Kind: store.ZRangeRank, Rev: reverse, Count: -1}
+	withScores := false
+	kindSeen := false
+	for i := optStart; i < len(args); i++ {
+		switch strings.ToUpper(string(args[i])) {
+		case "BYSCORE":
+			if kindSeen {
+				return spec, false, errSyntax
+			}
+			spec.Kind = store.ZRangeScore
+			kindSeen = true
+		case "BYLEX":
+			if kindSeen {
+				return spec, false, errSyntax
+			}
+			spec.Kind = store.ZRangeLex
+			kindSeen = true
+		case "REV":
+			spec.Rev = !reverse
+		case "WITHSCORES":
+			if !allowScores {
+				return spec, false, errSyntax
+			}
+			withScores = true
+		case "LIMIT":
+			if i+2 >= len(args) {
+				return spec, false, errSyntax
+			}
+			offset, err := parseInt(args[i+1])
+			if err != nil {
+				return spec, false, errSyntax
+			}
+			count, err := parseInt(args[i+2])
+			if err != nil {
+				return spec, false, errSyntax
+			}
+			spec.HasLimit = true
+			spec.Offset = int(offset)
+			if count > math.MaxInt32 {
+				count = math.MaxInt32
+			}
+			if count < -1 {
+				count = -1
+			}
+			spec.Count = int(count)
+			i += 2
+		default:
+			return spec, false, errSyntax
+		}
+	}
+
+	if spec.HasLimit && spec.Kind == store.ZRangeRank {
+		return spec, false, fmt.Errorf("ERR syntax error, LIMIT is only supported in combination with either BYSCORE or BYLEX")
+	}
+	if withScores && spec.Kind == store.ZRangeLex {
+		return spec, false, fmt.Errorf("ERR syntax error, WITHSCORES not supported in combination with BYLEX")
+	}
+	if spec.Offset < 0 {
+		// Redis yields an empty result for a negative LIMIT offset.
+		spec.Count = 0
+		spec.Offset = 0
+	}
+
+	lower, upper := args[boundStart], args[boundStart+1]
+	switch spec.Kind {
+	case store.ZRangeScore:
+		minArg, maxArg := lower, upper
+		if spec.Rev {
+			minArg, maxArg = upper, lower
+		}
+		r, err := store.ParseScoreRange(minArg, maxArg)
+		if err != nil {
+			return spec, false, errInvalidScoreRange
+		}
+		spec.Score = r
+	case store.ZRangeLex:
+		minArg, maxArg := lower, upper
+		if spec.Rev {
+			minArg, maxArg = upper, lower
+		}
+		r, err := store.ParseLexRange(minArg, maxArg)
+		if err != nil {
+			return spec, false, fmt.Errorf("ERR min or max not valid string range item")
+		}
+		spec.Lex = r
+	default:
+		start, err := parseInt(lower)
+		if err != nil {
+			return spec, false, err
+		}
+		stop, err := parseInt(upper)
+		if err != nil {
+			return spec, false, err
+		}
+		spec.RankStart, spec.RankStop = start, stop
+	}
+	return spec, withScores, nil
 }
 
 func cmdZRangeByScore(c *client, args [][]byte) (result, error) {
@@ -254,13 +351,35 @@ func cmdZRangeByScore(c *client, args [][]byte) (result, error) {
 }
 
 func cmdZRank(c *client, args [][]byte) (result, error) {
+	withScore := false
+	if len(args) == 4 {
+		if !strings.EqualFold(string(args[3]), "WITHSCORE") {
+			return result{}, errSyntax
+		}
+		withScore = true
+	} else if len(args) > 4 {
+		return result{}, errSyntax
+	}
+
 	reverse := strings.EqualFold(string(args[0]), "ZREVRANK")
-	rank, ok, err := c.srv.data.ZRank(string(args[1]), string(args[2]), reverse)
+	key := string(args[1])
+	member := string(args[2])
+	rank, ok, err := c.srv.data.ZRank(key, member, reverse)
 	if err != nil {
 		return result{}, err
 	}
 	if !ok {
+		if withScore {
+			return result{reply: nullArrayReply{}}, nil
+		}
 		return result{reply: null}, nil
+	}
+	if withScore {
+		score, _, err := c.srv.data.ZScore(key, member)
+		if err != nil {
+			return result{}, err
+		}
+		return result{reply: arrayReply{intReply(rank), bulkReply(store.FormatScore(score))}}, nil
 	}
 	return result{reply: intReply(rank)}, nil
 }
@@ -345,7 +464,7 @@ func scoreEntriesReply(entries []store.ScoreMember, withScores bool) any {
 	}
 	out := make(pairsReply, 0, len(entries)*2)
 	for _, entry := range entries {
-		out = append(out, bulkReply(entry.Member), bulkReply(store.FormatScore(entry.Score)))
+		out = append(out, bulkReply(entry.Member), doubleReply(entry.Score))
 	}
 	return out
 }

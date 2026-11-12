@@ -240,3 +240,82 @@ func TestSetProtoRejectsUnknownVersion(t *testing.T) {
 		t.Fatal("want error for protocol version 4")
 	}
 }
+
+func TestRESP3ScalarEncoders(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+	if err := w.SetProto(3); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteDouble(1.5); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteDouble(2); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteDouble(1e300); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteBigNumber("123456789012345678901234567890"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteVerbatim("txt", "hello"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteSetHeader(2); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteBulkString("a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteBulkString("b"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	want := ",1.5\r\n,2\r\n,1e+300\r\n(123456789012345678901234567890\r\n" +
+		"=9\r\ntxt:hello\r\n~2\r\n$1\r\na\r\n$1\r\nb\r\n"
+	if got := buf.String(); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestRESP2FallbacksForRESP3Types(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+	if err := w.WriteDouble(1.5); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteBigNumber("42"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteVerbatim("txt", "hello"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteSetHeader(1); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteBulkString("x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	want := "$3\r\n1.5\r\n$2\r\n42\r\n$5\r\nhello\r\n*1\r\n$1\r\nx\r\n"
+	if got := buf.String(); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestVerbatimRejectsBadFormat(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+	if err := w.SetProto(3); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteVerbatim("toolong", "x"); err == nil {
+		t.Fatal("want error for bad verbatim format")
+	}
+}

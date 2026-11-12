@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
+	"strings"
 
 	"github.com/BViganotti/redlite/internal/store"
 )
@@ -21,6 +23,100 @@ func init() {
 	registerCommand("LRANGE", 4, flagReadOnly, cmdLRange)
 	registerCommand("LTRIM", 4, flagWrite, cmdLTrim)
 	registerCommand("LREM", 4, flagWrite, cmdLRem)
+	registerCommand("LMPOP", -4, flagWrite, cmdLMPop)
+}
+
+// parseMPop parses the common "numkeys key [key ...] <LEFT|RIGHT> [COUNT n]"
+// tail that LMPOP and BLMPOP share. start is the index of numkeys.
+func parseMPop(args [][]byte, start int) ([]string, bool, int, error) {
+	if start >= len(args) {
+		return nil, false, 0, errSyntax
+	}
+	numKeys, err := parseInt(args[start])
+	if err != nil || numKeys <= 0 {
+		return nil, false, 0, fmt.Errorf("ERR numkeys should be greater than 0")
+	}
+	if int(numKeys) > len(args)-start-1 {
+		return nil, false, 0, fmt.Errorf("ERR Number of keys can't be greater than number of args")
+	}
+	keys := make([]string, 0, numKeys)
+	for _, key := range args[start+1 : start+1+int(numKeys)] {
+		keys = append(keys, string(key))
+	}
+
+	index := start + 1 + int(numKeys)
+	if index >= len(args) {
+		return nil, false, 0, errSyntax
+	}
+	var left bool
+	switch strings.ToUpper(string(args[index])) {
+	case "LEFT":
+		left = true
+	case "RIGHT":
+		left = false
+	default:
+		return nil, false, 0, errSyntax
+	}
+	index++
+
+	count := 1
+	if index < len(args) {
+		if !strings.EqualFold(string(args[index]), "COUNT") || index+1 >= len(args) {
+			return nil, false, 0, errSyntax
+		}
+		index++
+		value, err := parseInt(args[index])
+		if err != nil || value <= 0 {
+			return nil, false, 0, fmt.Errorf("ERR count should be greater than 0")
+		}
+		if value > math.MaxInt32 {
+			value = math.MaxInt32
+		}
+		count = int(value)
+		index++
+		if index != len(args) {
+			return nil, false, 0, errSyntax
+		}
+	}
+	return keys, left, count, nil
+}
+
+func cmdLMPop(c *client, args [][]byte) (result, error) {
+	keys, left, count, err := parseMPop(args, 1)
+	if err != nil {
+		return result{}, err
+	}
+	key, values, err := c.srv.data.LMPop(keys, left, count)
+	if err != nil {
+		return result{}, err
+	}
+	if key == "" {
+		return result{reply: nullArrayReply{}}, nil
+	}
+	return result{reply: mpOpReply(key, values), mutated: true, rewrite: lmpopRewrite(key, values, left)}, nil
+}
+
+func mpOpReply(key string, values [][]byte) arrayReply {
+	out := make(arrayReply, 2)
+	out[0] = bulkReply(key)
+	items := make(arrayReply, 0, len(values))
+	for _, value := range values {
+		items = append(items, bulkReply(value))
+	}
+	out[1] = items
+	return out
+}
+
+func lmpopRewrite(key string, values [][]byte, left bool) [][]byte {
+	command := "LPOP"
+	if !left {
+		command = "RPOP"
+	}
+	return [][]byte{
+		[]byte(command),
+		[]byte(key),
+		[]byte(strconv.Itoa(len(values))),
+	}
 }
 
 func cmdLPush(c *client, args [][]byte) (result, error) {
