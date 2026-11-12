@@ -42,9 +42,9 @@ are in scope; the inventory step in Phase 0 decides.
 
 ## 2. Baseline at v0.13.0
 
-203 of 295 commands in Redis 8.8. The authoritative gap list is generated from
+211 of 295 commands in Redis 8.8. The authoritative gap list is generated from
 Redis itself and lives in
-`internal/server/testdata/command-gaps.txt` (92 names); the conformance test
+`internal/server/testdata/command-gaps.txt` (84 names); the conformance test
 fails if that list drifts.
 
 | Family | Status |
@@ -53,7 +53,7 @@ fails if that list drifts.
 | Lists | Complete including `LMPOP`/`BLMPOP` |
 | Hashes | Missing the hash-field-expiry family and `HGETEX`/`HSETEX`/`HGETDEL`/`HINCRBYFLOAT` |
 | Sets | Complete |
-| Sorted sets | Complete except `BZPOPMIN`/`BZPOPMAX` |
+| Sorted sets | Complete including `BZPOPMIN`/`BZPOPMAX` |
 | Bitmaps | Complete (`BITFIELD` included) |
 | HyperLogLog | Complete; Redis-compatible `HYLL` payloads |
 | Geo | Complete |
@@ -61,7 +61,7 @@ fails if that list drifts.
 | Pub/Sub | Complete including sharded pub/sub |
 | Transactions | Present; `WATCH` still touch-based divergence |
 | Scripting | None |
-| Server / client / config | Broad: `DEBUG`, `MODULE`, `SLOWLOG`, `LATENCY`, `MONITOR`, `CLIENT KILL/REPLY`, `COMMAND DOCS`; gaps: `ROLE`, `FAILOVER`, `READONLY`/`READWRITE`, `ASKING` |
+| Server / client / config | Broad: `DEBUG`, `MODULE`, `SLOWLOG`, `LATENCY`, `MONITOR`, `CLIENT KILL/REPLY`, `COMMAND DOCS`; gaps: `FAILOVER` |
 | ACL | Selectors, `DRYRUN`, `LOG`, `GENPASS`; categories still limited |
 | Persistence | RDB + `DUMP`/`RESTORE`; missing multi-part AOF, stream encodings |
 | Replication | Redlite-to-redlite only |

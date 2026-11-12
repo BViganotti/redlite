@@ -296,6 +296,17 @@ check raw HGET hscopy f1
 check raw COPY hs hscopy
 check raw COPY hs hscopy REPLACE
 
+# Blocking sorted sets and hash float
+check raw ZADD bz 1 a 2 b
+check raw BZPOPMIN bz 0.05
+check raw ZADD bz 1 a 2 b
+check raw BZPOPMAX bz 0.05
+check raw HSET hf f 10
+check raw HINCRBYFLOAT hf f 5
+check raw READONLY
+check raw READWRITE
+check raw ASKING
+
 # Set stores and algebra
 check raw SADD ss1 a b c
 check raw SADD ss2 b c d

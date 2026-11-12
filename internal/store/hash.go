@@ -301,3 +301,28 @@ func hashPairs(fields map[string][]byte, order []string) []FieldValue {
 	}
 	return out
 }
+
+// HIncrByFloat adds a decimal increment to a hash field, creating it when
+// missing.
+func (s *Store) HIncrByFloat(key, field, increment string) (string, error) {
+	now := s.now()
+	sh := s.lockWrite(key)
+	defer s.unlockWrite(sh)
+
+	hv, err := s.hashLocked(sh, key, now, true)
+	if err != nil {
+		return "", err
+	}
+
+	current := "0"
+	if raw, ok := hv.fields[field]; ok {
+		current = string(raw)
+	}
+	result, err := addDecimalStrings(current, increment)
+	if err != nil {
+		return "", err
+	}
+	hv.fields[field] = []byte(result)
+	s.touch(sh.data[key])
+	return result, nil
+}

@@ -16,9 +16,6 @@ arring
 arscan
 arseek
 arset
-asking
-bzpopmax
-bzpopmin
 cluster
 delex
 digest
@@ -35,7 +32,6 @@ hexpireat
 hexpiretime
 hgetdel
 hgetex
-hincrbyfloat
 hotkeys
 hpersist
 hpexpire
@@ -48,11 +44,7 @@ increx
 move
 msetex
 pfdebug
-pfselftest
-readonly
-readwrite
 restore-asking
-role
 script
 swapdb
 sync

@@ -161,6 +161,9 @@ func (s *Store) ZAdd(key string, opts ZAddOptions, pairs []ScoreMember, incr boo
 	} else if res.Changed > 0 {
 		s.touch(sh.data[key])
 	}
+	if res.Added > 0 {
+		s.waiters.signal(key)
+	}
 	return res, nil
 }
 

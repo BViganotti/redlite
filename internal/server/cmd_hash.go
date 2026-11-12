@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -21,6 +22,7 @@ func init() {
 	registerCommand("HVALS", 2, flagReadOnly, cmdHVals)
 	registerCommand("HGETALL", 2, flagReadOnly, cmdHGetAll)
 	registerCommand("HINCRBY", 4, flagWrite|flagFast, cmdHIncrBy)
+	registerCommand("HINCRBYFLOAT", 4, flagWrite|flagFast, cmdHIncrByFloat)
 	registerCommand("HSCAN", -3, flagReadOnly, cmdHScan)
 }
 
@@ -216,4 +218,18 @@ func cmdHScan(c *client, args [][]byte) (result, error) {
 		items = append(items, bulkReply(pair.Field), bulkReply(pair.Value))
 	}
 	return result{reply: arrayReply{bulkReply(strconv.FormatUint(next, 10)), items}}, nil
+}
+
+func cmdHIncrByFloat(c *client, args [][]byte) (result, error) {
+	value, err := c.srv.data.HIncrByFloat(string(args[1]), string(args[2]), string(args[3]))
+	switch {
+	case err == nil:
+	case errors.Is(err, store.ErrNotFloat):
+		return result{}, fmt.Errorf("ERR value is not a valid float")
+	case errors.Is(err, store.ErrFloatResult):
+		return result{}, fmt.Errorf("ERR increment would produce NaN or Infinity")
+	default:
+		return result{}, err
+	}
+	return result{reply: bulkReply(value), mutated: true}, nil
 }

@@ -4,6 +4,21 @@ All notable changes to redlite are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/).
 
+## [0.14.0] - 2026-11-12
+
+### Added
+
+- `BZPOPMIN` and `BZPOPMAX`.
+- `HINCRBYFLOAT`.
+- `ROLE` on primaries and replicas.
+- `READONLY`, `READWRITE` and `ASKING`, which return Redis' explicit
+  "cluster support disabled" error, and `PFSELFTEST`.
+
+### Changed
+
+- The command inventory now reports 211 of 295 Redis 8.8 commands, with 84
+  tracked gaps.
+
 ## [0.13.0] - 2026-11-10
 
 ### Added

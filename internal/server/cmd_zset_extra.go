@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/BViganotti/redlite/internal/store"
 )
 
 func init() {
@@ -20,6 +23,12 @@ func init() {
 		return zpop(c, args, false)
 	})
 	registerCommand("ZRANDMEMBER", -2, flagReadOnly, cmdZRandMember)
+	registerCommand("BZPOPMIN", -3, flagWrite|flagBlocking, func(c *client, args [][]byte) (result, error) {
+		return blockingZPop(c, args, true)
+	})
+	registerCommand("BZPOPMAX", -3, flagWrite|flagBlocking, func(c *client, args [][]byte) (result, error) {
+		return blockingZPop(c, args, false)
+	})
 }
 
 type zsetOpArgs struct {
@@ -170,4 +179,86 @@ func cmdZRandMember(c *client, args [][]byte) (result, error) {
 		return result{}, err
 	}
 	return result{reply: scoreEntriesReply(entries, withScores)}, nil
+}
+
+func blockingZPop(c *client, args [][]byte, min bool) (result, error) {
+	timeout, err := parseBlockTimeout(args[len(args)-1])
+	if err != nil {
+		return result{}, err
+	}
+	keys := make([]string, 0, len(args)-2)
+	for _, key := range args[1 : len(args)-1] {
+		keys = append(keys, string(key))
+	}
+
+	popCommand := "ZPOPMAX"
+	if min {
+		popCommand = "ZPOPMIN"
+	}
+
+	try := func() (string, store.ScoreMember, bool, error) {
+		release := c.enterReadGate()
+		defer release()
+		for _, key := range keys {
+			entries, err := c.srv.data.ZPop(key, 1, min)
+			if err != nil {
+				return "", store.ScoreMember{}, false, err
+			}
+			if len(entries) > 0 {
+				return key, entries[0], true, nil
+			}
+		}
+		return "", store.ScoreMember{}, false, nil
+	}
+
+	var timeoutCh <-chan time.Time
+	if timeout > 0 {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		timeoutCh = timer.C
+	}
+
+	for {
+		key, entry, ok, err := try()
+		if err != nil {
+			return result{}, err
+		}
+		if ok {
+			return zpopReply(key, entry, popCommand), nil
+		}
+		if c.executing || c.srv.shuttingDown.Load() {
+			return result{reply: nullArrayReply{}}, nil
+		}
+
+		waiter := c.srv.data.Wait(keys)
+		key, entry, ok, err = try()
+		if err != nil {
+			c.srv.data.CancelWait(waiter)
+			return result{}, err
+		}
+		if ok {
+			c.srv.data.CancelWait(waiter)
+			return zpopReply(key, entry, popCommand), nil
+		}
+
+		select {
+		case <-waiter.C:
+			c.srv.data.CancelWait(waiter)
+		case <-timeoutCh:
+			c.srv.data.CancelWait(waiter)
+			return result{reply: nullArrayReply{}}, nil
+		}
+	}
+}
+
+func zpopReply(key string, entry store.ScoreMember, popCommand string) result {
+	return result{
+		reply: arrayReply{
+			bulkReply(key),
+			bulkReply(entry.Member),
+			bulkReply(store.FormatScore(entry.Score)),
+		},
+		mutated: true,
+		rewrite: [][]byte{[]byte(popCommand), []byte(key)},
+	}
 }

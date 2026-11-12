@@ -91,12 +91,12 @@ docker compose up --build
 `INCRBY` `DECRBY` `INCRBYFLOAT` `LCS` `SUBSTR`
 
 **Hashes**: `HSET` `HSETNX` `HMSET` `HGET` `HMGET` `HDEL` `HLEN` `HEXISTS`
-`HKEYS` `HVALS` `HGETALL` `HSTRLEN` `HINCRBY` `HRANDFIELD` `HSCAN`
+`HKEYS` `HVALS` `HGETALL` `HSTRLEN` `HINCRBY` `HINCRBYFLOAT` `HRANDFIELD` `HSCAN`
 
 **Lists**: `LPUSH` `RPUSH` `LPUSHX` `RPUSHX` `LPOP` `RPOP` `LLEN` `LINDEX`
 `LSET` `LRANGE` `LTRIM` `LREM` `LINSERT` `LPOS` `LMOVE` `RPOPLPUSH` `LMPOP`
 
-**Blocking**: `BLPOP` `BRPOP` `BLMOVE` `BRPOPLPUSH` `BLMPOP` `BZMPOP`
+**Blocking**: `BLPOP` `BRPOP` `BLMOVE` `BRPOPLPUSH` `BZPOPMIN` `BZPOPMAX` `BLMPOP` `BZMPOP`
 
 **Replication**: `REPLICAOF` `SLAVEOF` `PSYNC` `REPLCONF`
 
@@ -124,7 +124,7 @@ docker compose up --build
 `PERSIST` `EXPIRETIME` `PEXPIRETIME` `TOUCH` `DBSIZE` `FLUSHDB` `FLUSHALL`
 `SORT` `SORT_RO` `DUMP` `RESTORE` `MIGRATE`
 
-That is 203 commands. Every value carries an explicit type, so touching a hash
+That is 211 commands. Every value carries an explicit type, so touching a hash
 with `GET` or a string with `HGET` returns `WRONGTYPE` instead of guessing.
 See [docs/compatibility.md](docs/compatibility.md) for the differences you will
 hit and [ROADMAP.md](ROADMAP.md) for what comes next.
