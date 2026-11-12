@@ -40,29 +40,31 @@ and persistence.
 If the target release includes newer core types (for example vector sets), they
 are in scope; the inventory step in Phase 0 decides.
 
-## 2. Baseline at v0.11.0
+## 2. Baseline at v0.13.0
 
-160 commands. Approximate coverage by family (the Phase 0 inventory replaces
-these estimates with an exact diff):
+203 of 295 commands in Redis 8.8. The authoritative gap list is generated from
+Redis itself and lives in
+`internal/server/testdata/command-gaps.txt` (92 names); the conformance test
+fails if that list drifts.
 
 | Family | Status |
 | --- | --- |
-| Strings | High; missing `LCS`, a few deprecated aliases |
-| Lists | High; missing `LMPOP`, `BLMPOP` |
-| Hashes | Partial; missing the hash-field-expiry family (7.4+) |
-| Sets | Partial; missing the `*STORE` variants, `SMOVE`, `SINTERCARD` |
-| Sorted sets | Partial; missing the lex family, `ZRANGESTORE`, `ZINTERCARD`, `ZMPOP`, unified `ZRANGE` options |
-| Bitmaps | Partial; missing `BITFIELD`, `BITFIELD_RO` |
-| HyperLogLog | Commands present; payload is not Redis HLL |
-| Geo | None |
+| Strings | Complete for the core set; gaps: `MSETEX`, `INCREX`, digest helpers |
+| Lists | Complete including `LMPOP`/`BLMPOP` |
+| Hashes | Missing the hash-field-expiry family and `HGETEX`/`HSETEX`/`HGETDEL`/`HINCRBYFLOAT` |
+| Sets | Complete |
+| Sorted sets | Complete except `BZPOPMIN`/`BZPOPMAX` |
+| Bitmaps | Complete (`BITFIELD` included) |
+| HyperLogLog | Complete; Redis-compatible `HYLL` payloads |
+| Geo | Complete |
 | Streams | None |
-| Pub/Sub | Core present; sharded pub/sub missing |
-| Transactions | Present; `WATCH` semantics differ |
+| Pub/Sub | Complete including sharded pub/sub |
+| Transactions | Present; `WATCH` still touch-based divergence |
 | Scripting | None |
-| Server / client / config | Partial; many fields and subcommands missing |
-| ACL | Partial; no categories beyond read/write, no selectors or files |
-| Persistence | RDB read/write for five types; no AOF manifest, no `DUMP`/`RESTORE`, no stream/module encodings |
-| Replication | Redlite-to-redlite only; not wire-compatible with Redis |
+| Server / client / config | Broad: `DEBUG`, `MODULE`, `SLOWLOG`, `LATENCY`, `MONITOR`, `CLIENT KILL/REPLY`, `COMMAND DOCS`; gaps: `ROLE`, `FAILOVER`, `READONLY`/`READWRITE`, `ASKING` |
+| ACL | Selectors, `DRYRUN`, `LOG`, `GENPASS`; categories still limited |
+| Persistence | RDB + `DUMP`/`RESTORE`; missing multi-part AOF, stream encodings |
+| Replication | Redlite-to-redlite only |
 | Cluster | None |
 
 ## 3. Gap register
@@ -209,8 +211,8 @@ Server: `DEBUG` subcommands used by test suites and frameworks (`JMAP`,
 
 | Phase | Scope | Exit criterion | Estimate |
 | --- | --- | --- | --- |
-| 0 | Command inventory + conformance harness | `COMMAND DOCS` diff is empty except known gaps; differential runner can compare any command with seeds | 1–2 w |
-| 1 | Long-tail commands: SORT, set stores/SMOVE/SINTERCARD, BITFIELD, unified ZRANGE, DUMP/RESTORE, LMPOP/ZMPOP, sharded pub/sub, DEBUG/SLOWLOG/LATENCY/CLIENT KILL | Apps using core types no longer hit unknown-command | 3–5 w |
+| 0 | Command inventory + conformance harness (**done**) | `COMMAND DOCS` diff is empty except known gaps; differential runner can compare any command with seeds | done |
+| 1 | Long-tail commands: SORT, set stores/SMOVE/SINTERCARD, BITFIELD, unified ZRANGE, DUMP/RESTORE, LMPOP/ZMPOP, sharded pub/sub, DEBUG/SLOWLOG/LATENCY/CLIENT KILL (**done**) | Apps using core types no longer hit unknown-command | done |
 | 2 | Streams | Full stream family + consumer groups + RDB encodings | 3–5 w |
 | 3 | Scripting | Lua + functions, including replication mode | 3–5 w |
 | 4 | Multi-DB, full ACL, client tracking | `SELECT` 0–15, `MOVE`/`SWAPDB`, ACL users/files, tracking invalidations | 3–4 w |
